@@ -1,0 +1,90 @@
+# ── Python ────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# ── Test / Coverage ──────────────────────────────
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+coverage.xml
+*.cover
+.hypothesis/
+.cache
+
+# ── Type Checking ────────────────────────────────
+.mypy_cache/
+.dmypy.json
+dmypy.json
+.pyre/
+.ruff_cache/
+
+# ── Virtual Environments ─────────────────────────
+.venv/
+venv/
+ENV/
+env/
+
+# ── IDE ───────────────────────────────────────────
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+
+# ── Project-Specific ─────────────────────────────
+# 不入仓的大文件 / 用户私有数据
+output/
+runs/
+*.mp4
+*.mkv
+*.webm
+*.mp3
+*.m4a
+*.wav
+
+# 用户私有配置
+.env
+.env.local
+config.local.yaml
+~/.config/keynote-recap/
+
+# 临时缓存
+/tmp/keynote-recap-*
+
+# 大产物（黄金标准 HTML 单独说明放在用户本地）
+docs/examples/*.html
+docs/examples/frames/
+docs/examples/frames_official/
+
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride

@@ -90,6 +90,7 @@ def _build_user_for_outline(state: State, style_rules: str) -> str:
     # Use full transcript: outline must see all product names mentioned
     # Gemini 2.5 Pro context = 1M tokens, transcript ≈ 25K tokens, plenty of room
     transcript = state.video.transcript or ""
+    detected_products = _detect_product_names(transcript)
     research_notes = ""
     if state.research_notes_path:
         try:
@@ -102,11 +103,19 @@ def _build_user_for_outline(state: State, style_rules: str) -> str:
         for f in state.selected_frames[:60]
     )
 
+    products_str = "\n".join(f"  - {p} (mentioned {n} times)" for p, n in detected_products)
+
     return f"""# 视频信息
 - 标题：{state.video.title}
 - 时长：{format_duration(state.video.duration_s)}
 
-# 完整字幕（截断）
+# 自动检测到的产品/协议名（字幕里出现 ≥ 2 次的关键词）
+
+每个出现的产品名应当在大纲中有所体现：
+{products_str}
+
+# 完整字幕
+
 ```
 {transcript}
 ```
@@ -123,7 +132,9 @@ def _build_user_for_outline(state: State, style_rules: str) -> str:
 ---
 
 请输出 markdown 大纲（按 prompts/05-draft-outline.md 要求）。
-章节 8-14 个，按发布优先级排序，最后一章必须是「一点观察」。
+章节 12-15 个，按发布优先级排序，最后一章必须是「一点观察」。
+
+**自检**：上方"自动检测到的产品/协议名"中，每个出现 ≥ 5 次的关键词，要么是某章节标题/副标题的一部分，要么是某子章节标题。
 """
 
 
@@ -189,11 +200,13 @@ def _build_user_for_body(state: State, outline: str) -> str:
 请按 prompts/05-draft-write.md 要求输出**正文部分**（从 `## 一、` 到 `## 信源说明`）。
 
 **关键约束**：
-1. 每个 ## 章节至少 1 张图（违反则会被打回）
-2. 至少 8 个 `> 📎 **补充信源**：[Source](URL)` 块
-3. 使用 `frames/<filename>` 路径（不是 frames_raw/）
-4. 按发布优先级排章节，不按时间序
-5. 文末必须有：`## 十X、一点观察（独立判断，非发布会原话）` + `## 信源说明`
+1. **总图数 25-40 张**（少于 25 张视为质量不达标）—— 你拿到 {len(state.selected_frames)} 张候选，请用 25-35 张
+2. 每个 ## 章节至少 1 张图（违反则会被打回）
+3. 重要章节 4-6 张图，次要章节 2-3 张图
+4. 至少 8 个 `> 📎 **补充信源**：[Source](URL)` 块
+5. 使用 `frames/<filename>` 路径（不是 frames_raw/）
+6. 按发布优先级排章节，不按时间序
+7. 文末必须有：`## 十X、一点观察（独立判断，非发布会原话）` + `## 信源说明`
 
 **不要**输出整体概要 callout（由 stage 5.3 单独写）。
 **不要**输出 `# 标题`（由最终组装时加）。
@@ -266,6 +279,58 @@ def _extract_title(body: str) -> str:
 # ──────────────────────────────────────────────────────────────────────────────
 # Helpers
 # ──────────────────────────────────────────────────────────────────────────────
+import re
+
+# Curated list of product/protocol names to detect in any keynote transcript.
+# Detected names are passed to outline LLM as "must consider these products".
+_PRODUCT_PATTERNS = [
+    # Agent layer
+    "Spark", "Antigravity", "Subagent", "Project Astra",
+    # Models
+    r"Gemini\s+\d", "Omni", "world model", r"TPU\s+\w", "Trillium",
+    # Search / Workspace / YouTube
+    "AI Mode", "AI Overviews", "Ask YouTube", "Docs Live", "Universal Cart",
+    # Protocols
+    "UCP", "AP2", "A2A", "MCP",
+    # Creative tools
+    "Pics", "Stitch", "Flow", "Veo", "Imagen",
+    # Audio
+    "Neural Expressive", "Chirp",
+    # Hardware
+    "Pixel", "glasses", "XR", "Halo",
+    # Health / Science
+    "Fitbit", "Health", "AlphaFold", "AlphaProteo",
+    # Safety
+    "SynthID", "Content Credentials",
+    # Pricing
+    "Ultra", "AI Pro", "AI Ultra",
+    # Other
+    "NotebookLM", "AI Studio", "Vertex", "Firebase",
+]
+
+
+def _detect_product_names(transcript: str) -> list[tuple[str, int]]:
+    """Detect product/protocol names mentioned in transcript.
+
+    Returns list of (name, count) for names mentioned ≥ 2 times,
+    sorted by count descending. Used to feed outline LLM a "must consider" list.
+    """
+    if not transcript:
+        return []
+    counts: dict[str, int] = {}
+    for pattern in _PRODUCT_PATTERNS:
+        try:
+            matches = re.findall(pattern, transcript, re.IGNORECASE)
+        except re.error:
+            continue
+        if matches:
+            counts[pattern] = len(matches)
+    # Filter ≥ 2 mentions, sort by count desc
+    filtered = [(p, c) for p, c in counts.items() if c >= 2]
+    filtered.sort(key=lambda x: -x[1])
+    return filtered[:30]
+
+
 def _load_section(prompt_file: Path, section: str) -> str:
     if not prompt_file.exists():
         return ""

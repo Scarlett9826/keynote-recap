@@ -18,8 +18,38 @@ from ..config import Config
 from ..cost_tracker import track
 from ..llm_client import LLMClient
 from ..state import State
+from ..util import VisionCapabilityError, detect_vision_capability_error
 
 console = Console()
+
+# Path resolution: prompts/05-5-caption-verify.md
+CAPTION_VERIFY_PROMPT_FILE = (
+    Path(__file__).parent.parent.parent.parent / "prompts" / "05-5-caption-verify.md"
+)
+
+
+def _load_caption_verify_system() -> str:
+    """Load the System section from prompts/05-5-caption-verify.md.
+
+    Falls back to a minimal hard-coded system prompt if the file is missing
+    (e.g. when running from a non-standard install layout).
+    """
+    if not CAPTION_VERIFY_PROMPT_FILE.exists():
+        return _CAPTION_VERIFY_FALLBACK
+    text = CAPTION_VERIFY_PROMPT_FILE.read_text()
+    if "# System" in text and "# User Template" in text:
+        body = text.split("# System", 1)[1].split("# User Template", 1)[0]
+        return body.strip()
+    return _CAPTION_VERIFY_FALLBACK
+
+
+_CAPTION_VERIFY_FALLBACK = """## 能力前置自检（必须先执行）
+
+本任务需要多模态视觉能力。如果你只能看到文本但看不到图像，请只输出：
+ERROR_NO_VISION_CAPABILITY: 当前模型无法重新看图核对 caption。
+然后停止。
+
+你是质量审核员。重看图，核对 caption。严禁仅根据文本反推 actual_image_content。输出严格 JSON。"""
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -210,7 +240,7 @@ def verify_captions(state: State, cfg: Config, client: LLMClient) -> dict:
     try:
         text, in_t, out_t = client.chat_with_images(
             model=cfg.llm.models.verify,
-            system="你是质量审核员。重看图，核对 caption。输出严格 JSON。",
+            system=_load_caption_verify_system(),
             user_text=user_text,
             image_paths=image_paths,
             temperature=0.1,
@@ -219,7 +249,32 @@ def verify_captions(state: State, cfg: Config, client: LLMClient) -> dict:
         )
         track(state, stage="verify_captions", model=cfg.llm.models.verify,
               input_tokens=in_t, output_tokens=out_t)
+
+        # Capability probe: if the model couldn't see images, surface a clear
+        # warning instead of letting the JSON parser fail with a cryptic error.
+        err = detect_vision_capability_error(text)
+        if err:
+            raise VisionCapabilityError(err)
+
         return client.parse_json(text)
+    except VisionCapabilityError as e:
+        console.print()
+        console.print("  [yellow]⚠ Stage 5.5.2 skipped: model cannot see images[/]")
+        console.print(f"    Model returned: {e}")
+        console.print(f"    Current verify model: [cyan]{cfg.llm.models.verify}[/]")
+        console.print("    Set a multimodal model for the verify stage, e.g.:")
+        console.print("      [cyan]llm.models.verify: gemini-2.5-pro[/]")
+        console.print("      [cyan]llm.models.verify: claude-sonnet-4[/]")
+        console.print("    See README → 'Model Selection' for the verified list.")
+        return {
+            "verifications": [],
+            "summary": {
+                "total": 0,
+                "skipped": True,
+                "skip_reason": "no_vision_capability",
+                "model": cfg.llm.models.verify,
+            },
+        }
     except Exception as e:
         console.print(f"  [yellow]caption verify failed: {e}[/]")
         return {"verifications": [], "summary": {"total": 0, "error": str(e)}}

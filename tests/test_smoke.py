@@ -297,3 +297,85 @@ def test_detect_product_names():
     names = _detect_product_names(transcript, min_count=2)
     assert any("Gemini" in n for n in names)
     assert any("Antigravity" in n for n in names)
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Vision capability probe (P1 — small model support)
+# ──────────────────────────────────────────────────────────────────────────────
+def test_vision_capability_detector_clean_error():
+    from keynote_recap.util import detect_vision_capability_error
+
+    text = "ERROR_NO_VISION_CAPABILITY: 当前模型无法看到候选帧图像。"
+    result = detect_vision_capability_error(text)
+    assert result is not None
+    assert "ERROR_NO_VISION_CAPABILITY" in result
+
+
+def test_vision_capability_detector_with_code_fence():
+    from keynote_recap.util import detect_vision_capability_error
+
+    # Some models wrap output in ```...```; detector should still match
+    text = "```\nERROR_NO_VISION_CAPABILITY: 模型无 vision 能力。\n```"
+    result = detect_vision_capability_error(text)
+    assert result is not None
+    assert "ERROR_NO_VISION_CAPABILITY" in result
+
+
+def test_vision_capability_detector_no_false_positive_on_json():
+    from keynote_recap.util import detect_vision_capability_error
+
+    # A normal stage 3 JSON output must NOT trigger the detector
+    text = (
+        '{"selected_frames": [{"filename": "frame_15.jpg", '
+        '"caption": "Spark email demo", "info_density": 0.85}]}'
+    )
+    assert detect_vision_capability_error(text) is None
+
+
+def test_vision_capability_detector_handles_empty():
+    from keynote_recap.util import detect_vision_capability_error
+
+    assert detect_vision_capability_error("") is None
+    assert detect_vision_capability_error(None) is None
+
+
+def test_vision_capability_error_is_runtime_error():
+    from keynote_recap.util import VisionCapabilityError
+
+    assert issubclass(VisionCapabilityError, RuntimeError)
+    e = VisionCapabilityError("test message")
+    assert str(e) == "test message"
+
+
+def test_caption_verify_prompt_loads_from_file():
+    """Stage 5.5.2 should load its system prompt from prompts/05-5-caption-verify.md
+    (was previously hard-coded; this regression test prevents reverting)."""
+    from keynote_recap.stages.verify import _load_caption_verify_system
+
+    system = _load_caption_verify_system()
+    # Must contain the capability probe instructions
+    assert "ERROR_NO_VISION_CAPABILITY" in system
+    # Must mention the audit role
+    assert "审核" in system or "审" in system
+
+
+def test_extract_prompt_contains_capability_probe():
+    """Stage 3 prompt file must include the vision capability probe."""
+    from pathlib import Path
+
+    p = Path(__file__).parent.parent / "prompts" / "03-extract-vision-filter.md"
+    assert p.exists(), f"prompt file missing: {p}"
+    content = p.read_text()
+    assert "ERROR_NO_VISION_CAPABILITY" in content
+    assert "能力前置自检" in content
+
+
+def test_caption_verify_prompt_contains_capability_probe():
+    """Stage 5.5.2 prompt file must include the vision capability probe."""
+    from pathlib import Path
+
+    p = Path(__file__).parent.parent / "prompts" / "05-5-caption-verify.md"
+    assert p.exists(), f"prompt file missing: {p}"
+    content = p.read_text()
+    assert "ERROR_NO_VISION_CAPABILITY" in content
+    assert "能力前置自检" in content

@@ -6,6 +6,38 @@ import re
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
+# ──────────────────────────────────────────────────────────────────────────────
+# Vision capability probe
+# ──────────────────────────────────────────────────────────────────────────────
+# Vision-required prompts (stage 3, stage 5.5.2) instruct non-vision models to
+# reply with this exact prefix so the pipeline can fail fast instead of letting
+# the model hallucinate captions from subtitle text alone.
+VISION_CAPABILITY_ERROR_PREFIX = "ERROR_NO_VISION_CAPABILITY"
+
+
+class VisionCapabilityError(RuntimeError):
+    """Raised when a vision-required stage detects the LLM lacks vision."""
+
+
+def detect_vision_capability_error(text: str) -> str | None:
+    """Return the model's full error message if it signaled no-vision, else None.
+
+    The prompt asks the model to reply with a string starting with
+    ``ERROR_NO_VISION_CAPABILITY`` if it cannot see images. This helper checks
+    the first ~500 chars of the response (some models prepend whitespace or
+    code fences) and returns the trimmed line for surfacing to the user.
+    """
+    if not text:
+        return None
+    head = text.strip()[:500]
+    if VISION_CAPABILITY_ERROR_PREFIX in head:
+        # Return the line containing the marker (stripped of code fences)
+        for line in head.splitlines():
+            if VISION_CAPABILITY_ERROR_PREFIX in line:
+                return line.strip("`").strip()
+        return head
+    return None
+
 
 def slugify_url(url: str) -> str:
     """Generate a stable, filesystem-safe slug from a video URL.

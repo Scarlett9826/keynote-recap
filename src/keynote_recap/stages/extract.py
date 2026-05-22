@@ -19,7 +19,11 @@ from ..config import Config
 from ..cost_tracker import track
 from ..llm_client import LLMClient
 from ..state import SelectedFrame, State
-from ..util import format_duration
+from ..util import (
+    VisionCapabilityError,
+    detect_vision_capability_error,
+    format_duration,
+)
 
 console = Console()
 
@@ -76,8 +80,29 @@ def run(state: State, cfg: Config) -> State:
                 track(state, stage="extract", model=cfg.llm.models.extract,
                       input_tokens=in_t, output_tokens=out_t)
 
+                # Capability probe: fail fast if model can't see images
+                err = detect_vision_capability_error(text)
+                if err:
+                    raise VisionCapabilityError(err)
+
                 data = client.parse_json(text)
                 _merge_batch_result(data, batch, selected, rejected)
+            except VisionCapabilityError as e:
+                # Hard fail: model is non-vision; abort the whole stage
+                console.print()
+                console.print("[bold red]✗ Stage 3 aborted: model cannot see images[/]")
+                console.print(f"  Model returned: {e}")
+                console.print()
+                console.print("[bold]How to fix:[/]")
+                console.print(f"  Current model: [cyan]{cfg.llm.models.extract}[/]")
+                console.print("  Set a multimodal model via env or config, e.g.:")
+                console.print("    [cyan]export KEYNOTE_RECAP_MODEL=gemini-2.5-pro[/]")
+                console.print("    [cyan]export KEYNOTE_RECAP_MODEL=claude-sonnet-4[/]")
+                console.print("    [cyan]export KEYNOTE_RECAP_MODEL=gpt-4o[/]")
+                console.print("  Or set per-stage in config.yaml under llm.models.extract")
+                console.print()
+                console.print("  See README → 'Model Selection' section for the verified list.")
+                raise
             except Exception as e:
                 console.print(f"    [red]Batch failed: {e}[/]")
                 # Conservative fallback: keep all batch as rejected (they may be retried)

@@ -186,18 +186,47 @@ Neural Expressive / Pics / Stitch / Flow / Astra / SynthID / TPU 8t / TPU 8i ...
 
 注：以上是 Google I/O 2026 的参考样式（不是其他视频）。这次的视频也是 I/O 2026，应该有相似的章节布局。
 
-## 反"过度合并"自检
+## 章节切分必填表（必须先填完此表，再写正式大纲）
 
-写完大纲后自检：
-- 字幕里出现了 UCP / AP2 / Universal Cart 吗？→ 必须有「Agent 电商基础设施」单独章节
-- 字幕里出现了 Neural Expressive 吗？→ 必须有「Gemini App / Neural Expressive」单独章节
-- 字幕里出现了 Pics / Stitch / Flow 吗？→ 必须有「创意工具」单独章节
-- 字幕里出现了 glasses / XR / Project Astra glasses 吗？→ 必须有「智能眼镜」单独章节
-- 字幕里出现了 Fitbit / Health 吗？→ 必须有「健康」单独章节
-- 字幕里出现了 Omni / world model 吗？→ 必须有「世界模型」单独章节（不能并入「模型层」）
-- 字幕里出现了 Search / 搜索框 / 25 年 / AI Mode 吗？→ 必须有「Search 重做」单独章节
-- 字幕里出现了 Cell / cancer / scientific 吗？→ 必须有「科学」单独章节
+下面 10 个产品/主题在科技发布会中**经常被错误合并**到「模型层」或「Agent 体系」。
+**先逐行回答字幕里是否出现了这个关键词**——再写大纲。
 
-如果上面任何一项答案是"是"但你的大纲中没有相应独立章节——这是错误，必须重新切分。
+| 关键词（字幕中是否出现） | 是 / 否 | 若"是"则必须有的独立章节 | 不可合并到 |
+|---|---|---|---|
+| UCP / AP2 / Universal Cart / Agent Payments | __ | Agent 电商基础设施 | Agent 体系 |
+| Neural Expressive / Gemini App | __ | Gemini App / Neural Expressive | 模型层 |
+| Pics / Stitch / Flow / Imagen / Veo（创意工具） | __ | 创意工具 | 模型层 |
+| glasses / XR / Astra glasses / smart glasses | __ | 智能眼镜 | 硬件 |
+| Fitbit / Health / 健康 | __ | 健康生态 | 硬件 |
+| Omni / world model / 世界模型 | __ | 世界模型 | 模型层（**严禁并入**） |
+| Search / 搜索框 / AI Mode / SGE | __ | Search 重做 | 模型层 |
+| Cell / cancer / scientific / AlphaFold | __ | 科学 | 一点观察 |
+| TPU / Capex / 数据中心 / 算力 | __ | 基建底座 | 模型层 |
+| 价格 / 订阅 / Pro / Ultra / 定价 | __ | 订阅价格体系 | 一点观察 |
 
-现在开始起大纲。
+**填表规则**：
+- 在每行的"是 / 否"列填上你的判断（必须二选一，禁止留空）
+- 表格本身**不要**输出到最终大纲中——它只是你的思考支架
+- 大纲中**必须**为每行"是"的项目设独立 ## 章节（章节标题可以本地化，但不可省略）
+
+---
+
+## 大纲输出要求
+
+完成上面填表后，输出正式大纲（仅大纲，不要写正文）：
+
+```
+## 一、整体概要 callout
+## 二、<章节标题> ← 按字幕填表"是"的项目展开
+## 三、<章节标题>
+...
+## N、一点观察（独立判断）
+```
+
+约束：
+- 12-15 个 ## 章节
+- 上面填"是"的每一行都对应一个 ## 章节
+- 章节按"产品发布优先级"排序，不严格按时间序
+- 最后一章必须是「一点观察」
+
+现在先填上面那张表，再输出大纲。

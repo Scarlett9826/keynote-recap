@@ -115,9 +115,20 @@ def default_config_path() -> Path:
 def load_config(
     config_path: Path | None = None,
     llm_override: str | None = None,
+    llm_override_all: str | None = None,
     keep_video: bool | None = None,
 ) -> Config:
-    """Load config with layered overrides."""
+    """Load config with layered overrides.
+
+    Override precedence (later wins):
+        1. defaults (LLMModels class)
+        2. config file (~/.config/keynote-recap/config.yaml or --config path)
+        3. ``llm_override`` (--llm flag)        — sets draft only
+        4. ``llm_override_all`` (--llm-all)     — sets all 4 LLM stages
+        5. KEYNOTE_RECAP_MODEL env var          — sets draft only
+        6. KEYNOTE_RECAP_MODEL_ALL env var      — sets all 4 LLM stages
+        7. OPENAI_BASE_URL env var              — sets endpoint
+    """
     # Layer 1: defaults
     cfg = Config()
 
@@ -129,8 +140,18 @@ def load_config(
         cfg = Config.model_validate(_deep_merge(cfg.model_dump(), file_data))
 
     # Layer 3 + 4: CLI overrides
+    # Note: --llm / KEYNOTE_RECAP_MODEL only sets the draft model so users can
+    # mix-and-match (e.g. cheap research, premium draft). To set ONE model for
+    # all stages, use --llm-all / KEYNOTE_RECAP_MODEL_ALL — common when the
+    # user's gateway only supports a single model.
     if llm_override:
         cfg.llm.models.draft = llm_override
+
+    if llm_override_all:
+        cfg.llm.models.extract = llm_override_all
+        cfg.llm.models.research = llm_override_all
+        cfg.llm.models.draft = llm_override_all
+        cfg.llm.models.verify = llm_override_all
 
     if keep_video is not None:
         cfg.video.keep_video = keep_video
@@ -138,6 +159,11 @@ def load_config(
     # Layer 5: env vars
     if env_model := os.getenv("KEYNOTE_RECAP_MODEL"):
         cfg.llm.models.draft = env_model
+    if env_model_all := os.getenv("KEYNOTE_RECAP_MODEL_ALL"):
+        cfg.llm.models.extract = env_model_all
+        cfg.llm.models.research = env_model_all
+        cfg.llm.models.draft = env_model_all
+        cfg.llm.models.verify = env_model_all
     if env_base := os.getenv("OPENAI_BASE_URL"):
         cfg.llm.base_url = env_base
 

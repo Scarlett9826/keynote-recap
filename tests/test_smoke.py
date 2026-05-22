@@ -379,3 +379,76 @@ def test_caption_verify_prompt_contains_capability_probe():
     content = p.read_text()
     assert "ERROR_NO_VISION_CAPABILITY" in content
     assert "能力前置自检" in content
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Preflight model classifier (CLI doctor command)
+# ──────────────────────────────────────────────────────────────────────────────
+def test_preflight_classifies_verified_multimodal():
+    from keynote_recap.preflight import ModelTier, check_model_capability
+
+    for name in [
+        "claude-opus-4",
+        "claude-sonnet-4",
+        "claude-3-opus",
+        "claude-3.5-sonnet",
+        "gemini-2.5-pro",
+        "gemini-1.5-pro",
+        "gpt-4o",
+        "gpt-4-turbo",
+        "openai/gpt-4o",
+    ]:
+        result = check_model_capability(name)
+        assert result.tier == ModelTier.VERIFIED_MULTIMODAL, f"{name} should be verified"
+
+
+def test_preflight_classifies_known_text_only():
+    from keynote_recap.preflight import ModelTier, check_model_capability
+
+    for name in [
+        "mimo-2.5-pro",
+        "mimo-7b",
+        "gpt-4o-mini",
+        "gpt-3.5-turbo",
+        "deepseek-v3",
+        "deepseek-r1",
+        "qwen-max",
+        "qwen-3.6-plus",
+        "llama-3-70b",
+    ]:
+        result = check_model_capability(name)
+        assert result.tier == ModelTier.KNOWN_TEXT_ONLY, f"{name} should be text-only"
+
+
+def test_preflight_unknown_models():
+    from keynote_recap.preflight import ModelTier, check_model_capability
+
+    for name in [
+        "qwen-vl-max",   # multimodal but not on verified list yet
+        "internal-foo-bar",
+        "",
+    ]:
+        result = check_model_capability(name)
+        assert result.tier == ModelTier.UNKNOWN, f"{name} should be unknown"
+
+
+def test_llm_override_all_sets_all_stages():
+    """--llm-all / KEYNOTE_RECAP_MODEL_ALL should override all 4 LLM stages,
+    not just the draft stage (which the existing --llm flag handles)."""
+    from keynote_recap.config import load_config
+
+    cfg = load_config(llm_override_all="gemini-2.5-pro")
+    assert cfg.llm.models.extract == "gemini-2.5-pro"
+    assert cfg.llm.models.research == "gemini-2.5-pro"
+    assert cfg.llm.models.draft == "gemini-2.5-pro"
+    assert cfg.llm.models.verify == "gemini-2.5-pro"
+
+
+def test_llm_override_only_sets_draft():
+    """--llm should only set draft (regression: don't accidentally widen scope)."""
+    from keynote_recap.config import load_config
+
+    cfg = load_config(llm_override="claude-opus-4")
+    assert cfg.llm.models.draft == "claude-opus-4"
+    # extract/research/verify retain their defaults
+    assert cfg.llm.models.extract != "claude-opus-4"  # default is claude-sonnet-4

@@ -48,7 +48,15 @@ def main() -> None:
     "--llm",
     type=str,
     default=None,
-    help="Override default LLM model (e.g. claude-opus-4 / gpt-4o).",
+    help="Override the draft (stage 5) model only. Use --llm-all to set all stages.",
+)
+@click.option(
+    "--llm-all",
+    type=str,
+    default=None,
+    help="Override ALL LLM stages (extract/research/draft/verify) with one model. "
+         "Use this if your gateway only supports a single model. "
+         "Same as KEYNOTE_RECAP_MODEL_ALL env var.",
 )
 @click.option(
     "--start-stage",
@@ -77,16 +85,23 @@ def main() -> None:
     is_flag=True,
     help="Enable debug logging.",
 )
+@click.option(
+    "--force",
+    is_flag=True,
+    help="Skip preflight model-capability check and run anyway.",
+)
 def recap(
     url: str,
     output_dir: Path | None,
     config: Path | None,
     llm: str | None,
+    llm_all: str | None,
     start_stage: str,
     end_stage: str,
     keep_video: bool,
     checkpoint: bool,
     debug: bool,
+    force: bool,
 ) -> None:
     """Run full 7-stage pipeline on a video URL.
 
@@ -99,7 +114,12 @@ def recap(
     from .config import load_config
     from .pipeline import run_pipeline
 
-    cfg = load_config(config_path=config, llm_override=llm, keep_video=keep_video)
+    cfg = load_config(
+        config_path=config,
+        llm_override=llm,
+        llm_override_all=llm_all,
+        keep_video=keep_video,
+    )
 
     if output_dir is None:
         from .util import slugify_url
@@ -113,6 +133,11 @@ def recap(
     console.print(f"[dim]LLM:        {cfg.llm.models.draft}[/]")
     console.print(f"[dim]Stages:     {start_stage} → {end_stage}[/]")
     console.print()
+
+    # Preflight: warn / abort if model is known text-only.
+    # Checks the most-used model; per-stage overrides may still differ.
+    if not _preflight_models(cfg, force=force):
+        sys.exit(2)
 
     try:
         run_pipeline(
@@ -132,6 +157,73 @@ def recap(
         if debug:
             raise
         sys.exit(1)
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Preflight model-capability check
+# ──────────────────────────────────────────────────────────────────────────────
+def _preflight_models(cfg, force: bool = False) -> bool:
+    """Print a model-capability summary; return False to abort if user picked
+    a model the project knows will silent-fail on vision stages.
+
+    The two stages that require vision are ``extract`` (stage 3) and
+    ``verify`` (stage 5.5.2). We check both; if either is known-text-only
+    we abort unless ``--force`` is set.
+
+    Returns:
+        True if pipeline should continue, False if user must fix config first.
+    """
+    from .preflight import ModelTier, VERIFIED_MODELS_DOC, check_model_capability
+
+    # Stages that strictly need a multimodal model
+    vision_stages = {
+        "extract (stage 3 frame filter)": cfg.llm.models.extract,
+        "verify (stage 5.5.2 caption verify)": cfg.llm.models.verify,
+    }
+
+    console.print("[bold]Preflight: model capability check[/]")
+    has_blocker = False
+    has_unknown = False
+    for stage_name, model_name in vision_stages.items():
+        result = check_model_capability(model_name)
+        if result.tier == ModelTier.VERIFIED_MULTIMODAL:
+            console.print(f"  [green]✓[/] {stage_name}: [cyan]{model_name}[/] — {result.note}")
+        elif result.tier == ModelTier.KNOWN_TEXT_ONLY:
+            console.print(
+                f"  [red]✗[/] {stage_name}: [cyan]{model_name}[/] — {result.note}"
+            )
+            has_blocker = True
+        else:  # UNKNOWN
+            console.print(
+                f"  [yellow]⚠[/] {stage_name}: [cyan]{model_name}[/] — {result.note}"
+            )
+            has_unknown = True
+
+    if has_blocker and not force:
+        console.print()
+        console.print("[bold red]Aborted:[/] one or more vision stages use a "
+                      "known text-only model.")
+        console.print()
+        console.print(VERIFIED_MODELS_DOC)
+        console.print()
+        console.print("[dim]Override with[/] [cyan]--force[/] [dim]if you really want to "
+                      "try (the prompt-level capability probe will still abort the run "
+                      "when the model fails to see images).[/]")
+        return False
+
+    if has_blocker and force:
+        console.print()
+        console.print("[yellow]⚠ --force set; continuing despite text-only model.[/] "
+                      "Stage 3 / 5.5.2 will likely fail at the prompt-level capability probe.")
+
+    if has_unknown:
+        console.print()
+        console.print("[dim]Some models are not on the verified list. If they support "
+                      "image input the run will succeed; otherwise the prompt-level "
+                      "capability probe will abort with a clear error.[/]")
+
+    console.print()
+    return True
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -158,6 +250,59 @@ def config(init: bool) -> None:
 
     cfg = load_config()
     console.print_json(cfg.model_dump_json(indent=2))
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# `doctor` — preflight only, no pipeline run
+# ──────────────────────────────────────────────────────────────────────────────
+@main.command()
+@click.option(
+    "--config", "-c",
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    default=None,
+    help="Config file path (default: ~/.config/keynote-recap/config.yaml).",
+)
+@click.option(
+    "--llm",
+    type=str,
+    default=None,
+    help="Override the draft model to test against.",
+)
+@click.option(
+    "--llm-all",
+    type=str,
+    default=None,
+    help="Override ALL LLM stages with one model (e.g. test if your gateway model works).",
+)
+def doctor(config: Path | None, llm: str | None, llm_all: str | None) -> None:
+    """Check current config for known model-compatibility issues.
+
+    Run this before starting a long pipeline to catch bad model choices early.
+    Exits non-zero if a known text-only model is configured for a vision stage.
+    """
+    from .config import load_config
+    from .preflight import VERIFIED_MODELS_DOC
+
+    cfg = load_config(config_path=config, llm_override=llm, llm_override_all=llm_all)
+
+    console.print(f"[bold cyan]keynote-recap doctor v{__version__}[/]")
+    console.print()
+    console.print("[bold]Resolved per-stage models:[/]")
+    console.print(f"  extract:  [cyan]{cfg.llm.models.extract}[/]   [dim](stage 3, needs vision)[/]")
+    console.print(f"  research: [cyan]{cfg.llm.models.research}[/]   [dim](stage 4)[/]")
+    console.print(f"  draft:    [cyan]{cfg.llm.models.draft}[/]      [dim](stage 5, main writer)[/]")
+    console.print(f"  verify:   [cyan]{cfg.llm.models.verify}[/]     [dim](stage 5.5, needs vision)[/]")
+    console.print()
+
+    ok = _preflight_models(cfg, force=False)
+
+    if ok:
+        console.print("[green]All vision-required stages have a workable model.[/]")
+        console.print()
+        console.print("[dim]Reference list (verified models):[/]")
+        console.print(VERIFIED_MODELS_DOC)
+    else:
+        sys.exit(2)
 
 
 # ──────────────────────────────────────────────────────────────────────────────

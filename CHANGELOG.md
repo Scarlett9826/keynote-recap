@@ -4,7 +4,87 @@ All notable changes to **keynote-recap** are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.2.0] — M5 hard quality gate + M4 small-model support (2026-05-22)
+
+Major release combining two work streams:
+
+1. **M5 (this commit)**: methodology rules become code-enforced contract,
+   not LLM suggestion. Default tier `standard` → `strict`; pipeline retries
+   draft once on any rule violation; report carries a yellow warning banner
+   when quality gate fails after retry.
+2. **M4 (previous batch)**: small-model support — vision capability probe,
+   `doctor` subcommand, `--llm-all` flag, draft prompt tiers, vendor presets.
+
+### Added — M5 (hard quality gate)
+
+Rationale: 3 real user-feedback docx files revealed the LLM ignoring
+prompt-level rules — invented placeholder filenames (`frame_gt_01.jpg`),
+missing `**核心判断**：`, forbidden phrases (`总而言之`, `显著`,
+`不仅仅`). Prompt-only constraints rely on LLM self-discipline; this
+release makes them code-enforced contracts.
+
+#### Default tier flipped to `strict`
+
+- `config.py`: `DraftConfig.tier` default `standard` → `strict`. Methodology
+  rules are now hard contract: ban-word list active, ≥ 8 citations,
+  ≥ 8 table rows, every chapter must have `**核心判断**：`, callout block
+  required, `## 信源说明` + `## 一点观察` mandatory.
+- Users on weaker LLMs should pass `--tier easy` or `--tier standard`
+  rather than seeing low-quality output silently published.
+- `--tier` CLI help text and `cli.py` `recap` command updated.
+
+#### 4 hard-fail flags + retry-once mechanism
+
+- `state.py`: 5 new persisted fields:
+  - `placeholder_detected: bool` (5.5.0 hard gate)
+  - `lint_hard_failed: bool` (5.5.3 L1 hard gate)
+  - `structure_check_passed: bool` (5.5.5 hard gate)
+  - `draft_retry_count: int`
+  - `final_quality_warnings: list[str]`, `quality_passed: bool`
+- `stages/verify.py`:
+  - 5.5.0 missing filename now sets `state.placeholder_detected`.
+  - 5.5.3 L1 lint errors now set `state.lint_hard_failed`.
+  - L1 errors print line/rule/found context to console for debug.
+- `pipeline.py`:
+  - New `_collect_quality_failures()` helper inspects 4 flags and
+    returns a human-readable issue list.
+  - After stage 5.5: if any hard gate fails AND `draft_retry_count == 0`,
+    rewind `last_completed_stage` to 4.0 and re-run draft + verify once.
+  - If retry still fails, set `quality_passed=False` and stash the
+    issue list in `final_quality_warnings`. Pipeline continues to
+    stage 6 render rather than crashing.
+
+#### Yellow warning banner on quality fail
+
+- `stages/render.py`: emits a `<div class="quality-banner">` above the
+  body when `quality_passed=False`, listing each failed gate and
+  suggesting a stronger model or `--tier easy`. Light + dark CSS theme.
+- New `_escape()` helper for safe HTML in banner text.
+
+#### Draft prompt: placeholder counter-examples + self-check
+
+- `stages/draft.py`:
+  - **Bug fix (root cause of `test-opencode.docx` failure)**:
+    `_build_user_for_body` was reconstructing `frame_NNN.jpg` from
+    `f.filename.split("_")[1]`, which dropped the `.jpg` suffix and
+    confused the LLM into inventing semantic names like `frame_gt_01.jpg`.
+    Filenames are now passed verbatim from `f.filename`.
+  - User prompt now includes 3 explicit `❌` counter-examples
+    (`frame_gt_01.jpg`, `01-spark-intro.jpg`, `frame_intro.jpg`) and a
+    `✅` example using the first real filename from `selected_frames`.
+  - Added `⚠️ 输出前自检` step instructing the model to scan its own
+    `![](frames/XXX)` references for fabricated names before submitting.
+
+#### Tests
+
+- 52 → 58 (6 new):
+  - State has 4 hard-gate flags + retry counter (defaults sane).
+  - `_collect_quality_failures()` returns empty when all pass.
+  - `_collect_quality_failures()` produces 4 distinct lines per flag.
+  - Render emits banner div + warning text when quality_passed=False.
+  - Render emits no banner div when quality_passed=True.
+  - Draft user prompt contains all 3 forbidden placeholder examples,
+    the real filename verbatim, and the self-check instruction.
 
 ### Added — M4 (small-model support)
 

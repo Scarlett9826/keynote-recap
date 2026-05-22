@@ -49,7 +49,16 @@
 - 上下文 < 64K 的模型 —— Stage 3 字幕全文 + 80 帧会截断
 - 中等指令遵循模型 —— 即使是多模态版，禁用词清单、章节切分约束容易漏
 
-如果你的网关只能用纯文本或中等模型，建议**等 v0.2 版本**——届时会提供 easy tier prompt + capability probe + 自动降级。当前 v0.1 假设你用的是上面"已验证可用"列表里的模型。
+**v0.2 起，已为弱模型提供退路**：
+
+- `keynote-recap doctor` — 跑前检查每个 stage 的模型是否具备所需能力（多模态 / 长上下文）
+- `--llm-all <model>` — 单网关只能用一个模型时，一键覆盖所有 4 个 LLM stage
+- `--tier easy` — 中等多模态模型（gemini-2.5-flash / qwen-vl-max / llama-3.1-vision）专用，禁用词从 21 → 5、图数下限从 25 → 15、引用下限从 10 → 5
+- 4 个 vendor preset：`docs/examples/config.preset-{gemini-only,claude-only,openai-only,mixed-cheap}.yaml`
+
+**v0.2 默认走严格模式**（方法论铁律 = 代码合约）：
+
+ban 词、必有核心判断、≥ 8 引用、≥ 8 表格、callout / 信源说明 / 一点观察等约束**默认全开**。verify 检出任何硬错误 → 自动重跑 draft 1 次；二次仍失败 → report 顶部出现黄色 warning banner 列出未达项，但仍写出 HTML 让你可以人工修。如果你的模型在 strict 下频繁触发 banner，加 `--tier easy` 或 `--tier standard` 退一步。
 
 ## 5 分钟上手
 

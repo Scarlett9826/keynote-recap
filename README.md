@@ -21,7 +21,9 @@
 
 ---
 
-> **协作者请先读 [USAGE.md](USAGE.md)** —— 给定任意发布会链接如何在 30 分钟内产出高质量复盘的完整指南。
+> **想了解为什么不用通用视频总结工具？** 看 [HIGHLIGHTS.md](HIGHLIGHTS.md)（5 个真正的创新点 + 与人工版的指标级对照）。
+>
+> **想自己跑一遍？** 看 [USAGE.md](USAGE.md)（30 分钟产出高质量复盘的完整指南）。
 
 ## 5 分钟上手
 
@@ -187,6 +189,7 @@ stages:
 
 | 文档 | 用途 |
 |---|---|
+| [HIGHLIGHTS.md](HIGHLIGHTS.md) | **创新点说明**：5 个与通用视频总结工具的关键差异 + M2 baseline 对照 |
 | [USAGE.md](USAGE.md) | **复用指南**：丢一个新发布会链接如何高质量复盘 |
 | [docs/configuration.md](docs/configuration.md) | **完整配置指南**（所有参数 + 示例） |
 | [docs/requirements.md](docs/requirements.md) | **单一真相源**：38 条用户消息溯源 + 隐式偏好 + 资产清单 |

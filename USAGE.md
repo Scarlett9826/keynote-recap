@@ -29,6 +29,52 @@ export OPENAI_API_KEY=sk-xxx
 export OPENAI_BASE_URL=https://api.openai.com/v1
 ```
 
+### 1.1.5 选模型（必读）
+
+**这个项目对 LLM 有硬要求**：stage 3（筛图）和 stage 5.5.2（caption 验证）必须用**多模态模型**，纯文本模型会 silent failure（caption 全是基于字幕推测的幻觉，看似合规但内容错误）。
+
+**已验证可跑通的模型**：
+
+| 模型 | 多模态 | 上下文 | 推荐场景 |
+|---|---|---|---|
+| `claude-opus-4` / `claude-sonnet-4` | ✅ | 200K | 全栈推荐（最稳） |
+| `gemini-2.5-pro` | ✅ | 1M | 性价比最高（M2 baseline 用的就是它） |
+| `gpt-4o` / `gpt-4-turbo` | ✅ | 128K | 全栈可用 |
+
+**已知会失败的模型**（`keynote-recap doctor` 会拦截）：
+
+- `mimo-2.5-pro` 等 MiMo 系列 —— 纯文本，capability probe 必触发
+- `gpt-4o-mini` / `gpt-3.5-*` —— OpenAI 的文本变体
+- `deepseek-v3` / `deepseek-r1` —— 纯文本
+- `qwen-max` / `qwen-plus` / `qwen-3.x` —— 纯文本（用 `qwen-vl-*` 才行）
+- `llama-3.x` 默认 —— 纯文本
+
+**3 种用法（按场景选）**：
+
+```bash
+# 用法 A：所有 stage 一个模型（最常见，单一网关）
+export KEYNOTE_RECAP_MODEL_ALL=gemini-2.5-pro
+
+# 用法 B：混合用法（省钱：研究用便宜的、写作用贵的）
+# 在 ~/.config/keynote-recap/config.yaml 里设：
+# llm.models.research: gpt-4o-mini
+# llm.models.draft: claude-opus-4
+# 其它 stage 用 default
+
+# 用法 C：CLI flag 临时切（不改 config）
+keynote-recap recap <url> --llm-all gemini-2.5-pro
+```
+
+**跑前先体检**：
+
+```bash
+keynote-recap doctor
+# 或测试某个模型
+keynote-recap doctor --llm-all gemini-2.5-pro
+```
+
+输出会列出每个 stage 的解析模型 + 标记是否多模态。`✗` 标记的模型会让 `recap` 子命令拒绝执行（除非加 `--force`）。
+
 ### 1.2 写一个 config（可选，用默认也能跑）
 
 ```bash

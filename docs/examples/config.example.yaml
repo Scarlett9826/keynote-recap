@@ -1,0 +1,86 @@
+# keynote-recap — example config
+# Copy to ~/.config/keynote-recap/config.yaml and tweak.
+# Every field is optional; the defaults below match the Config schema in
+# src/keynote_recap/config.py. CLI flags and env vars override this file.
+
+llm:
+  # OpenAI-compatible by default. The CLI also supports `anthropic-native` for
+  # direct Anthropic API calls (claude-* models on api.anthropic.com).
+  provider: openai-compatible
+
+  # Endpoint base URL. Examples:
+  #   https://api.openai.com/v1
+  #   https://generativelanguage.googleapis.com/v1beta/openai
+  #   https://openrouter.ai/api/v1
+  #   https://your-llm-proxy.example.com/v1     # corporate gateway
+  base_url: https://api.openai.com/v1
+
+  # Name of the env var holding the API key. Keep the *value* in env, not here.
+  api_key_env: OPENAI_API_KEY
+
+  timeout_s: 600
+  max_retries: 3
+
+  # Per-stage model selection. Pick whatever your endpoint exposes.
+  # Recommended quality/cost balance:
+  models:
+    extract: claude-sonnet-4      # stage 3, vision filter
+    research: gpt-4o-mini          # stage 4, web summarize (cheap, frequent)
+    draft: claude-opus-4           # stage 5, main writer (most important)
+    verify: claude-sonnet-4        # stage 5.5, caption check (vision)
+    transcribe: gemini-2.5-pro     # stage 1, subtitle fallback
+
+  # Cheaper full-Gemini stack (single-model, ~$0.40 per keynote):
+  # models:
+  #   extract: gemini-2.5-pro
+  #   research: gemini-2.5-flash
+  #   draft: gemini-2.5-pro
+  #   verify: gemini-2.5-pro
+  #   transcribe: gemini-2.5-pro
+
+search:
+  # duckduckgo: zero-key default (free, lower quality)
+  # tavily: better quality, requires TAVILY_API_KEY
+  # webfetch_only: skip search, only fetch URLs the model already knows
+  provider: duckduckgo
+  api_key_env: TAVILY_API_KEY     # only used when provider=tavily
+  max_queries: 30
+  max_webfetch: 50
+  timeout_s: 15
+
+video:
+  resolution: 1080p60              # yt-dlp -f filter target
+  keep_video: true                  # default: keep mp4 for zero-cost rerun
+  download_subtitles: true
+  languages: ["zh-Hans", "zh", "en"]
+
+stages:
+  start: 1.0
+  end: 6.0
+  # After these stages, pause for human review (Ctrl-C to abort).
+  checkpoints: [3.0, 4.0, 5.5]
+
+frame_filter:
+  # Stage 2 — PIL-based frame scorer (cheap)
+  candidate_count: 80
+  sample_interval_s: 5.0
+  min_text_density: 0.05
+
+  # Stage 3 — Vision-LLM precision filter
+  final_count_min: 30
+  final_count_max: 50
+  info_density_min: 0.7
+  relevance_min: 0.7
+
+draft:
+  # Stage 5 writing targets — the LLM is asked to hit these.
+  target_lines_min: 600
+  target_lines_max: 900
+  section_count_min: 8
+  section_count_max: 14
+  callout_block_min: 8              # 整体概要 callout 块数
+  callout_block_max: 12
+  citation_min: 8                    # `> 📎` block minimum
+
+language: zh                        # zh | en (MVP: zh only is well-tested)
+template: keynote-recap             # only template in v0.1.0a1

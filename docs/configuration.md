@@ -52,20 +52,27 @@ llm:
 | verify (vision) | claude-sonnet-4 / gemini-2.5-pro | needs image understanding |
 | transcribe | gemini-2.5-pro | good subtitle quality, reasonable cost |
 
-**Using a non-OpenAI endpoint** (e.g., Xiaomi LLM proxy):
+**Using a non-OpenAI endpoint** (e.g., a corporate LLM gateway, OpenRouter, Together, Anyscale, …):
 
 ```yaml
 llm:
   provider: openai-compatible
-  base_url: https://your-gateway.example.com/v1
-  api_key_env: XIAOMI_LLM_API_KEY
+  base_url: https://your-llm-proxy.example.com/v1
+  api_key_env: CUSTOM_LLM_API_KEY
   models:
-    extract: ppio/gemini-2.5-pro
-    research: ppio/gemini-2.5-flash
-    draft: ppio/gemini-2.5-pro
-    verify: ppio/gemini-2.5-pro
-    transcribe: ppio/gemini-2.5-pro
+    # Model IDs depend on the proxy. Many corporate gateways prefix the
+    # upstream provider, e.g. `vendor/gemini-2.5-pro` or `openrouter/google/gemini-pro-1.5`.
+    extract: gemini-2.5-pro
+    research: gemini-2.5-flash
+    draft: gemini-2.5-pro
+    verify: gemini-2.5-pro
+    transcribe: gemini-2.5-pro
 ```
+
+> Some OpenAI-compatible gateways do not proxy Claude models (the Anthropic
+> wire format differs). If `claude-*` returns 404, fall back to `gemini-2.5-pro`
+> or `gpt-4o` to confirm connectivity, then file a ticket with your gateway
+> vendor for Claude support.
 
 ### `search` — Web Search Provider
 

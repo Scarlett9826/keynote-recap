@@ -78,10 +78,10 @@ search-tavily = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/yourname/keynote-recap"
-Documentation = "https://github.com/yourname/keynote-recap/tree/main/docs"
-Repository = "https://github.com/yourname/keynote-recap"
-Issues = "https://github.com/yourname/keynote-recap/issues"
+Homepage = "https://github.com/Scarlett9826/keynote-recap"
+Documentation = "https://github.com/Scarlett9826/keynote-recap/tree/main/docs"
+Repository = "https://github.com/Scarlett9826/keynote-recap"
+Issues = "https://github.com/Scarlett9826/keynote-recap/issues"
 
 [project.scripts]
 keynote-recap = "keynote_recap.cli:main"

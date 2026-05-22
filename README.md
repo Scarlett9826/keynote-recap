@@ -61,11 +61,11 @@ keynote-recap recap https://www.youtube.com/watch?v=wYSncx9zLIU \
 - ✅ **OpenAI 兼容 endpoint**：用户自由换 LLM（Claude / GPT / 智谱 / 通义 / ...）
 - ✅ **可插拔 search provider**：Tavily / 直接用 webfetch / 自定义
 
-## 为什么不直接用 video-recap
+## 为什么不直接用通用视频总结工具
 
-[video-recap](https://github.com/bytedance/video-recap)（同作者另一个项目）面向**通用视频复盘**（演讲 / 访谈 / 教程 / 发布会四类）。
+通用视频总结类项目（如各种 video-recap / video-summarizer）面向访谈、教程、演讲等多种视频类型，输出通常是纯文本要点清单。
 
-`keynote-recap` 是**面向发布会的专门版本**，相比 video-recap 多做 7 件事：
+`keynote-recap` 是**面向科技发布会的专门工具**，多做 7 件事来贴合发布会的复盘需求：
 
 | 增量 | 解决什么问题 |
 |---|---|

@@ -148,7 +148,7 @@ def write_sample_config(path: Path) -> None:
     """Write a sample config YAML to path."""
     path.parent.mkdir(parents=True, exist_ok=True)
     sample = """# keynote-recap config
-# Full schema docs: https://github.com/yourname/keynote-recap/blob/main/docs/configuration.md
+# Full schema docs: https://github.com/Scarlett9826/keynote-recap/blob/main/docs/configuration.md
 
 llm:
   provider: openai-compatible

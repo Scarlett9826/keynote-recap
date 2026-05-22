@@ -149,9 +149,9 @@ feat(m<X>-v<N>): <一句话总结，用数字而不是形容词>
 | `draft`（主写作） | `claude-opus-4` | `gpt-4-turbo`, `gemini-2.5-pro` | 最贵但质量最关键 |
 | `verify`（质检） | `claude-sonnet-4` | `gpt-4o-mini` | 需 vision（caption 核对） |
 
-**全栈用 `gemini-2.5-pro` 也能跑**——M2 v10 就是这么跑的，单次 ~$0.40。
+**全栈用 `gemini-2.5-pro` 也能跑**——单次 ~$0.40。
 
-> ⚠ **ACME内部 endpoint** (`https://your-gateway.example.com/v1`)：claude 系列不兼容（需走 anthropic 端点）；gemini-2.5-pro / gpt-4o 全部支持。
+> ⚠ **OpenAI 兼容代理的常见坑**：部分 LLM 网关把 `/v1` 暴露成 OpenAI 兼容协议，但仅对 GPT / Gemini 系列生效；Claude 系列需要走 anthropic 原生端点。如果你的 endpoint 调 Claude 报 404 / 协议错误，先把 `models.draft` 换成 `gemini-2.5-pro` 或 `gpt-4o` 验证连通。
 
 ### 3.2 视频质量（影响抽帧）
 

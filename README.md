@@ -8,6 +8,8 @@
 
 ---
 
+> **协作者请先读 [USAGE.md](USAGE.md)** —— 给定任意发布会链接如何在 30 分钟内产出高质量复盘的完整指南。
+
 ## 5 分钟上手
 
 ```bash
@@ -172,6 +174,7 @@ stages:
 
 | 文档 | 用途 |
 |---|---|
+| [USAGE.md](USAGE.md) | **复用指南**：丢一个新发布会链接如何高质量复盘 |
 | [docs/configuration.md](docs/configuration.md) | **完整配置指南**（所有参数 + 示例） |
 | [docs/requirements.md](docs/requirements.md) | **单一真相源**：38 条用户消息溯源 + 隐式偏好 + 资产清单 |
 | [docs/methodology.md](docs/methodology.md) | 方法论完整说明（结构 / 来源 / 视觉 / 文风 4 层） |

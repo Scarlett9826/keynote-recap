@@ -103,7 +103,6 @@ def lint_report(report_md: str) -> dict:
     level2: list[dict] = []  # warnings
 
     in_quote_block = False
-    in_callout = False
 
     for i, line in enumerate(lines, start=1):
         stripped = line.strip()
@@ -114,10 +113,6 @@ def lint_report(report_md: str) -> dict:
             continue
         if not stripped.startswith(">"):
             in_quote_block = False
-        if "<div class=\"callout\"" in line:
-            in_callout = True
-        if "</div>" in line:
-            in_callout = False
 
         # Skip image captions and headers (no L2 check)
         is_image = "![" in line and "](" in line

@@ -10,7 +10,6 @@ Strategy:
 """
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 from rich.console import Console
@@ -175,14 +174,14 @@ def _build_user_text(
 ) -> str:
     """Build per-batch user prompt with frame metadata."""
     lines = [
-        f"# 视频信息",
+        "# 视频信息",
         f"- 标题：{title}",
         f"- 时长：{duration}",
         "",
-        f"# 字幕全文（已截断到 30K 字符）",
-        f"```",
+        "# 字幕全文（已截断到 30K 字符）",
+        "```",
         transcript,
-        f"```",
+        "```",
         "",
         f"# 候选帧（本批 {len(batch)} 张，全局序号 {batch_start + 1} – {batch_start + len(batch)}）",
         "",

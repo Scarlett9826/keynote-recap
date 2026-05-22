@@ -4,7 +4,6 @@ Allows --start-stage to resume from any checkpoint without redoing earlier work.
 """
 from __future__ import annotations
 
-import json
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Literal

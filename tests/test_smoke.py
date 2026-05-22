@@ -27,7 +27,7 @@ def test_import_cli():
 
 
 def test_import_config():
-    from keynote_recap.config import Config, load_config
+    from keynote_recap.config import Config
     cfg = Config()
     assert cfg.llm.models.draft
     assert cfg.video.keep_video is True
@@ -231,3 +231,69 @@ def test_state_save_load(tmp_path: Path):
     assert loaded.url == s.url
     assert loaded.video.title == "Test Keynote"
     assert loaded.last_completed_stage == 2.0
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Official channels registry
+# ──────────────────────────────────────────────────────────────────────────────
+def test_official_channels_import():
+    from keynote_recap.official_channels import (
+        REGISTRY,
+    )
+    assert "google" in REGISTRY
+    assert "openai" in REGISTRY
+    assert "anthropic" in REGISTRY
+
+
+def test_detect_publisher_google():
+    from keynote_recap.official_channels import detect_publisher
+
+    assert detect_publisher("Google", "Google I/O '26 Keynote", "") == "google"
+    assert detect_publisher("YouTube Official", "I/O 2026", "Welcome to Google I/O") == "google"
+
+
+def test_detect_publisher_openai():
+    from keynote_recap.official_channels import detect_publisher
+
+    assert detect_publisher("OpenAI", "OpenAI DevDay 2026", "") == "openai"
+
+
+def test_detect_publisher_unknown():
+    from keynote_recap.official_channels import detect_publisher
+
+    assert detect_publisher("Random Channel", "Tech talk", "") is None
+
+
+def test_candidate_urls_for_product_google():
+    from keynote_recap.official_channels import (
+        candidate_urls_for_product,
+        get_channel,
+    )
+
+    ch = get_channel("google")
+    urls = candidate_urls_for_product(ch, "Gemini 3 Pro")
+    assert any("gemini-3-pro" in u for u in urls)
+    assert any("blog.google" in u for u in urls)
+
+
+def test_is_official_url():
+    from keynote_recap.official_channels import get_channel, is_official_url
+
+    ch = get_channel("google")
+    assert is_official_url("https://blog.google/products/gemini/", ch)
+    assert is_official_url("https://developers.googleblog.com/x", ch)
+    assert not is_official_url("https://random-blog.example.com/post", ch)
+    assert not is_official_url("https://blog.google/x", None)
+
+
+def test_detect_product_names():
+    from keynote_recap.stages.research import _detect_product_names
+
+    transcript = (
+        "Today we're introducing Gemini 3 Pro. With Gemini 3 Pro, you get... "
+        "And we're launching Antigravity. Antigravity is a new platform. "
+        "We also have Veo 3 and Veo 3 for video. The future is here."
+    )
+    names = _detect_product_names(transcript, min_count=2)
+    assert any("Gemini" in n for n in names)
+    assert any("Antigravity" in n for n in names)

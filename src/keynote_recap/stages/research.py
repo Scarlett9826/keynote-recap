@@ -13,7 +13,6 @@ Outputs:
 """
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 from rich.console import Console
@@ -22,6 +21,12 @@ from rich.progress import Progress
 from ..config import Config
 from ..cost_tracker import track
 from ..llm_client import LLMClient
+from ..official_channels import (
+    candidate_urls_for_product,
+    detect_publisher,
+    get_channel,
+    is_official_url,
+)
 from ..search import get_search_provider, url_alive, webfetch
 from ..state import FactToVerify, State, VerifiedFact
 from ..util import format_duration
@@ -132,100 +137,261 @@ def _extract_facts(state: State, cfg: Config, client: LLMClient) -> list[FactToV
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# 4.2 verify via web search
+# 4.2 verify — official-channel-first, search as fallback
 # ──────────────────────────────────────────────────────────────────────────────
+def _detect_product_names(transcript: str, min_count: int = 2, max_n: int = 30) -> list[str]:
+    """Extract candidate product names from the transcript.
+
+    Heuristic: tokens matching `<Capitalized Word>(?: Capitalized Word)?` plus
+    optional version suffix like `3` / `3.0` / `Pro`. Keep names mentioned
+    ≥ min_count times, sorted by frequency.
+    """
+    import re
+    from collections import Counter
+
+    # E.g., "Gemini 3 Pro", "Antigravity", "Veo 3", "ChatGPT Atlas"
+    pattern = re.compile(
+        r"\b([A-Z][a-zA-Z]{2,}(?:\s+[A-Z][a-zA-Z0-9]+){0,2}(?:\s+\d+(?:\.\d+)?)?(?:\s+(?:Pro|Ultra|Max|Mini|Lite|Plus))?)\b"
+    )
+    raw = pattern.findall(transcript or "")
+    # Strip leading common English stopwords that get glued on by sentence starts
+    leading_stop = {
+        "The", "And", "For", "But", "When", "What", "How", "We", "You", "It", "I",
+        "Today", "With", "Now", "So", "If", "Then", "This", "That", "These", "Those",
+        "Our", "Your", "My", "His", "Her", "Their",
+    }
+
+    def _clean(name: str) -> str:
+        parts = name.strip().split()
+        while parts and parts[0] in leading_stop:
+            parts = parts[1:]
+        return " ".join(parts)
+
+    cleaned = [c for c in (_clean(x) for x in raw) if c and len(c) >= 3]
+    cnt = Counter(cleaned)
+    out = [name for name, n in cnt.most_common(max_n) if n >= min_count]
+    return out[:max_n]
+
+
+def _summarize_page(
+    state: State,
+    cfg: Config,
+    client: LLMClient,
+    fact: FactToVerify,
+    content: str,
+) -> str | None:
+    """Ask the research model to extract one short paragraph relevant to fact."""
+    try:
+        text, in_t, out_t = client.chat(
+            model=cfg.llm.models.research,
+            system="你从网页内容中精确提取一段事实。输出仅一段话，不超过 200 字。",
+            user=(
+                f"问题：{fact.what_to_verify}\n\n"
+                f"网页内容（前 8000 字符）：\n{content}\n\n"
+                f"请精确摘出与问题相关的内容（1 段，≤ 200 字）。"
+                f"如网页内容与问题无关，回复「无相关信息」。"
+            ),
+            temperature=0.1,
+            max_tokens=400,
+        )
+        track(state, stage="research_verify",
+              model=cfg.llm.models.research,
+              input_tokens=in_t, output_tokens=out_t)
+        if text and "无相关" not in text:
+            return text.strip()
+    except Exception:
+        return None
+    return None
+
+
+def _try_official_url(
+    state: State,
+    cfg: Config,
+    client: LLMClient,
+    fact: FactToVerify,
+    url: str,
+    page_cache: dict[str, str],
+) -> tuple[VerifiedFact, str] | None:
+    """Try to verify a fact via a single official URL. Returns (vf, content) or None."""
+    if url in page_cache:
+        content = page_cache[url]
+    else:
+        if not url_alive(url, timeout=cfg.search.timeout_s):
+            return None
+        ok, content = webfetch(url, timeout=cfg.search.timeout_s, max_chars=8000)
+        if not ok or not content:
+            return None
+        page_cache[url] = content
+
+    summary = _summarize_page(state, cfg, client, fact, content)
+    if not summary:
+        return None
+
+    # Pick a title from the first non-empty markdown heading or first 80 chars
+    title = ""
+    for line in content.splitlines():
+        line = line.strip()
+        if line.startswith("#"):
+            title = line.lstrip("# ").strip()
+            break
+    if not title:
+        title = content[:80].replace("\n", " ").strip()
+
+    return (
+        VerifiedFact(
+            id=fact.id,
+            transcript_quote=fact.transcript_quote,
+            verified_content=summary,
+            source_url=url,
+            source_name=title or url,
+            confidence="high",
+        ),
+        content,
+    )
+
+
 def _verify_facts(
     state: State,
     cfg: Config,
     client: LLMClient,
     facts: list[FactToVerify],
 ) -> tuple[list[VerifiedFact], list[str], list[dict[str, str]]]:
-    """For each fact, run search → fetch top URL → ask LLM to summarize."""
-    provider = get_search_provider(cfg.search)
+    """Verify facts by combining:
+        1. Official-channel-first: detect publisher, fetch seed URLs + product
+           URL templates derived from transcript, summarize relevant content.
+        2. Generic web search as fallback when no official source verifies the fact.
+    """
     verified: list[VerifiedFact] = []
     unknowns: list[str] = []
-    url_index: dict[str, dict[str, str]] = {}  # dedup by url
+    url_index: dict[str, dict[str, str]] = {}
 
     # Sort by priority, cap to max_queries
     priority_order = {"high": 0, "medium": 1, "low": 2}
     sorted_facts = sorted(facts, key=lambda f: priority_order.get(f.priority, 2))[: cfg.search.max_queries]
 
+    # ─── Detect publisher & build candidate URL pool ───
+    transcript = state.video.transcript if state.video else ""
+    title = state.video.title if state.video else ""
+    uploader = state.video.uploader if state.video else ""
+    publisher = detect_publisher(uploader, title, transcript[:2000])
+    channel = get_channel(publisher)
+
+    candidate_urls: list[str] = []
+    if channel:
+        console.print(f"  [4.2] Detected publisher: [cyan]{publisher}[/] "
+                      f"({len(channel.domains)} official domains)")
+        # Seed URLs (landing pages — index of recent posts)
+        candidate_urls.extend(channel.seed_urls)
+        # Product-derived URLs
+        product_names = _detect_product_names(transcript)
+        if product_names:
+            console.print(f"        Detected products: {', '.join(product_names[:8])}"
+                          f"{' …' if len(product_names) > 8 else ''}")
+        for name in product_names:
+            candidate_urls.extend(candidate_urls_for_product(channel, name))
+        # Dedup, preserve order
+        seen: set[str] = set()
+        candidate_urls = [u for u in candidate_urls if not (u in seen or seen.add(u))]
+        # Cap to a reasonable budget
+        candidate_urls = candidate_urls[: cfg.search.max_webfetch * 2]
+    else:
+        console.print("  [4.2] No publisher detected; using search-only mode")
+
+    page_cache: dict[str, str] = {}
     fetch_count = 0
 
-    with Progress(transient=True) as progress:
-        task = progress.add_task("verify facts", total=len(sorted_facts))
-
-        for fact in sorted_facts:
-            try:
-                query = fact.what_to_verify
-                hits = provider.search(query, max_results=3)
-            except Exception as e:
-                if cfg.debug:
-                    console.print(f"    [red]search failed: {e}[/]")
-                hits = []
-
-            if not hits:
-                unknowns.append(f"{fact.what_to_verify}（搜索无结果）")
+    # ─── Pass 1: official-channel-first ───
+    if candidate_urls:
+        with Progress(transient=True) as progress:
+            task = progress.add_task("official-first verify", total=len(sorted_facts))
+            for fact in sorted_facts:
+                hit = None
+                for url in candidate_urls:
+                    if fetch_count >= cfg.search.max_webfetch:
+                        break
+                    # Skip URLs already-cached as failed
+                    if url in page_cache and not page_cache[url]:
+                        continue
+                    fetch_count += 1 if url not in page_cache else 0
+                    res = _try_official_url(state, cfg, client, fact, url, page_cache)
+                    if res:
+                        hit = res
+                        break
+                if hit:
+                    vf, _content = hit
+                    verified.append(vf)
+                    url_index[vf.source_url] = {
+                        "url": vf.source_url,
+                        "title": vf.source_name,
+                        "fact_id": vf.id,
+                    }
                 progress.advance(task)
-                continue
+        console.print(f"        Official-first verified: {len(verified)} / {len(sorted_facts)}")
 
-            # Try top hit + verify URL alive
-            chosen = None
-            for h in hits:
-                if not h.url:
+    verified_ids = {v.id for v in verified}
+    remaining = [f for f in sorted_facts if f.id not in verified_ids]
+
+    # ─── Pass 2: search fallback ───
+    if remaining and fetch_count < cfg.search.max_webfetch:
+        provider = get_search_provider(cfg.search)
+        with Progress(transient=True) as progress:
+            task = progress.add_task("search fallback", total=len(remaining))
+            for fact in remaining:
+                try:
+                    query = fact.what_to_verify
+                    if channel:
+                        # Bias query toward official domains
+                        domain_hint = " OR ".join(f"site:{d}" for d in channel.domains[:3])
+                        query = f"{query} ({domain_hint})"
+                    hits = provider.search(query, max_results=3)
+                except Exception as e:
+                    if cfg.debug:
+                        console.print(f"    [red]search failed: {e}[/]")
+                    hits = []
+
+                if not hits:
+                    unknowns.append(f"{fact.what_to_verify}（搜索无结果）")
+                    progress.advance(task)
                     continue
-                if url_alive(h.url, timeout=cfg.search.timeout_s):
-                    chosen = h
-                    break
 
-            if not chosen:
-                unknowns.append(f"{fact.what_to_verify}（结果 URL 不可达）")
+                chosen = None
+                for h in hits:
+                    if h.url and url_alive(h.url, timeout=cfg.search.timeout_s):
+                        chosen = h
+                        break
+                if not chosen:
+                    unknowns.append(f"{fact.what_to_verify}（结果 URL 不可达）")
+                    progress.advance(task)
+                    continue
+
+                content_summary = chosen.snippet
+                if fetch_count < cfg.search.max_webfetch:
+                    ok, content = webfetch(chosen.url, timeout=cfg.search.timeout_s, max_chars=8000)
+                    fetch_count += 1
+                    if ok:
+                        s = _summarize_page(state, cfg, client, fact, content)
+                        if s:
+                            content_summary = s
+
+                conf = "high" if is_official_url(chosen.url, channel) else "medium"
+                verified.append(VerifiedFact(
+                    id=fact.id,
+                    transcript_quote=fact.transcript_quote,
+                    verified_content=content_summary,
+                    source_url=chosen.url,
+                    source_name=chosen.title,
+                    confidence=conf,
+                ))
+                url_index[chosen.url] = {
+                    "url": chosen.url,
+                    "title": chosen.title,
+                    "fact_id": fact.id,
+                }
                 progress.advance(task)
-                continue
-
-            # Webfetch content if budget allows
-            content_summary = chosen.snippet
-            if fetch_count < cfg.search.max_webfetch:
-                ok, content = webfetch(chosen.url, timeout=cfg.search.timeout_s, max_chars=8000)
-                fetch_count += 1
-                if ok:
-                    # Use small LLM to extract relevant fact
-                    try:
-                        extract_text, in_t, out_t = client.chat(
-                            model=cfg.llm.models.research,
-                            system="你从网页内容中精确提取一段事实。输出仅一段话，不超过 200 字。",
-                            user=(
-                                f"问题：{fact.what_to_verify}\n\n"
-                                f"网页内容（前 8000 字符）：\n{content}\n\n"
-                                f"请精确摘出与问题相关的内容（1 段，≤ 200 字）。"
-                                f"如网页内容与问题无关，回复「无相关信息」。"
-                            ),
-                            temperature=0.1,
-                            max_tokens=400,
-                        )
-                        track(state, stage="research_verify",
-                              model=cfg.llm.models.research,
-                              input_tokens=in_t, output_tokens=out_t)
-                        if extract_text and "无相关" not in extract_text:
-                            content_summary = extract_text.strip()
-                    except Exception:
-                        pass
-
-            verified.append(VerifiedFact(
-                id=fact.id,
-                transcript_quote=fact.transcript_quote,
-                verified_content=content_summary,
-                source_url=chosen.url,
-                source_name=chosen.title,
-                confidence="high" if "blog." in chosen.url or ".com/blog" in chosen.url else "medium",
-            ))
-            url_index[chosen.url] = {
-                "url": chosen.url,
-                "title": chosen.title,
-                "fact_id": fact.id,
-            }
-
-            progress.advance(task)
+    else:
+        # Anything still unverified → unknown
+        for fact in remaining:
+            unknowns.append(f"{fact.what_to_verify}（官方渠道未覆盖且预算用尽）")
 
     return verified, unknowns, list(url_index.values())
 

@@ -18,7 +18,7 @@ from rich.progress import Progress
 from ..config import Config
 from ..frame_scorer import score_image
 from ..state import FrameCandidate, State
-from ..util import ensure_dir, format_duration
+from ..util import ensure_dir
 from .download import parse_srt
 
 console = Console()

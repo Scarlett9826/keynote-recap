@@ -91,7 +91,7 @@ def run_pipeline(
 
     # Final report path
     if state.report_html_path:
-        console.print(f"[bold green]✓ Pipeline complete[/]")
+        console.print("[bold green]✓ Pipeline complete[/]")
         console.print(f"  Markdown: {state.report_md_path}")
         console.print(f"  HTML:     {state.report_html_path}")
 

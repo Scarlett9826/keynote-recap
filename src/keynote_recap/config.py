@@ -87,6 +87,17 @@ class DraftConfig(BaseModel):
     callout_block_max: int = 12
     citation_min: int = 8                     # `> 📎 补充信源` 块最低数
 
+    # Difficulty tier — selects which 05-draft-write-*.md prompt to load.
+    # easy:     fewer forbidden phrases, looser image/citation thresholds.
+    #           Suitable for medium-capability multimodal models
+    #           (gemini-2.5-flash, qwen-vl-max, llama-3.1-vision).
+    # standard: current 21 forbidden phrases, 25-40 images, ≥ 10 citations.
+    #           The default; works on claude-sonnet-4 / gpt-4o /
+    #           gemini-2.5-pro.
+    # strict:   tighter constraints (≤ 25 char sentences, ≥ 2 citations
+    #           per section). Recommended for claude-opus-4.
+    tier: str = "standard"
+
 
 class Config(BaseModel):
     """Top-level config."""

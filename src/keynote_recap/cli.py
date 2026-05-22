@@ -59,6 +59,14 @@ def main() -> None:
          "Same as KEYNOTE_RECAP_MODEL_ALL env var.",
 )
 @click.option(
+    "--tier",
+    type=click.Choice(["easy", "standard", "strict"]),
+    default=None,
+    help="Draft prompt tier (default: standard). 'easy' for medium-capability "
+         "multimodal models (gemini-2.5-flash, qwen-vl-max); 'strict' for "
+         "claude-opus-4 and similar top-tier models.",
+)
+@click.option(
     "--start-stage",
     type=click.Choice(["1", "2", "3", "4", "5", "5.5", "6", "7"]),
     default="1",
@@ -96,6 +104,7 @@ def recap(
     config: Path | None,
     llm: str | None,
     llm_all: str | None,
+    tier: str | None,
     start_stage: str,
     end_stage: str,
     keep_video: bool,
@@ -121,6 +130,9 @@ def recap(
         keep_video=keep_video,
     )
 
+    if tier is not None:
+        cfg.draft.tier = tier
+
     if output_dir is None:
         from .util import slugify_url
         output_dir = Path("runs") / slugify_url(url)
@@ -131,6 +143,7 @@ def recap(
     console.print(f"[dim]URL:        {url}[/]")
     console.print(f"[dim]Output:     {output_dir}[/]")
     console.print(f"[dim]LLM:        {cfg.llm.models.draft}[/]")
+    console.print(f"[dim]Draft tier: {cfg.draft.tier}[/]")
     console.print(f"[dim]Stages:     {start_stage} → {end_stage}[/]")
     console.print()
 

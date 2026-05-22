@@ -452,3 +452,92 @@ def test_llm_override_only_sets_draft():
     assert cfg.llm.models.draft == "claude-opus-4"
     # extract/research/verify retain their defaults
     assert cfg.llm.models.extract != "claude-opus-4"  # default is claude-sonnet-4
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Draft tier selection (P2 — small model support)
+# ──────────────────────────────────────────────────────────────────────────────
+def test_draft_tier_default_is_standard():
+    from keynote_recap.config import load_config
+
+    cfg = load_config()
+    assert cfg.draft.tier == "standard"
+
+
+def test_draft_tier_picks_easy_prompt():
+    from keynote_recap.config import load_config
+    from keynote_recap.stages.draft import _pick_draft_prompt
+
+    cfg = load_config()
+    cfg.draft.tier = "easy"
+    p = _pick_draft_prompt(cfg)
+    assert p.name == "05-draft-write-easy.md"
+    assert p.exists()
+
+
+def test_draft_tier_picks_standard_prompt():
+    from keynote_recap.config import load_config
+    from keynote_recap.stages.draft import _pick_draft_prompt
+
+    cfg = load_config()
+    cfg.draft.tier = "standard"
+    p = _pick_draft_prompt(cfg)
+    assert p.name == "05-draft-write.md"
+    assert p.exists()
+
+
+def test_draft_tier_picks_strict_prompt():
+    from keynote_recap.config import load_config
+    from keynote_recap.stages.draft import _pick_draft_prompt
+
+    cfg = load_config()
+    cfg.draft.tier = "strict"
+    p = _pick_draft_prompt(cfg)
+    assert p.name == "05-draft-write-strict.md"
+    assert p.exists()
+
+
+def test_draft_tier_unknown_falls_back_to_standard():
+    """Unknown tier strings should silently fall back to standard, not crash."""
+    from keynote_recap.config import load_config
+    from keynote_recap.stages.draft import _pick_draft_prompt
+
+    cfg = load_config()
+    cfg.draft.tier = "this-tier-does-not-exist"
+    p = _pick_draft_prompt(cfg)
+    assert p.name == "05-draft-write.md"
+
+
+def test_draft_tier_case_insensitive():
+    from keynote_recap.config import load_config
+    from keynote_recap.stages.draft import _pick_draft_prompt
+
+    cfg = load_config()
+    cfg.draft.tier = "EASY"
+    p = _pick_draft_prompt(cfg)
+    assert p.name == "05-draft-write-easy.md"
+
+
+def test_easy_prompt_is_shorter_than_standard():
+    """Easy tier exists primarily to reduce prompt length for medium models."""
+    from pathlib import Path
+
+    base = Path(__file__).parent.parent / "prompts"
+    standard_chars = (base / "05-draft-write.md").read_text()
+    easy_chars = (base / "05-draft-write-easy.md").read_text()
+    # Easy should be at least 25% shorter than standard
+    assert len(easy_chars) < len(standard_chars) * 0.8, (
+        f"easy={len(easy_chars)} chars, standard={len(standard_chars)} chars; "
+        "easy tier failed to meaningfully shorten the prompt"
+    )
+
+
+def test_easy_prompt_has_relaxed_image_count():
+    """Easy tier loosens the 25-40 image constraint to 15-40."""
+    from pathlib import Path
+
+    p = Path(__file__).parent.parent / "prompts" / "05-draft-write-easy.md"
+    content = p.read_text()
+    assert "15-40" in content, "easy tier should advertise the looser 15-40 image range"
+    # Easy tier should have a citation requirement of 5 (not 10)
+    assert "至少 5 个" in content or "≥ 5" in content

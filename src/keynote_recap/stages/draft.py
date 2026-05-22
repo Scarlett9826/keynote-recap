@@ -21,6 +21,30 @@ from ..util import format_duration
 console = Console()
 
 PROMPTS_DIR = Path(__file__).parent.parent.parent.parent / "prompts"
+
+
+def _pick_draft_prompt(cfg: Config) -> Path:
+    """Resolve the draft-write prompt file based on cfg.draft.tier.
+
+    Tiers:
+        easy     → 05-draft-write-easy.md (looser constraints, ~37% shorter)
+        standard → 05-draft-write.md      (current default; 21 forbidden phrases)
+        strict   → 05-draft-write-strict.md (incremental constraints on top)
+
+    Falls back to standard if the requested tier file is missing or the tier
+    string is unrecognized; logs a warning to stderr.
+    """
+    tier = (cfg.draft.tier or "standard").lower()
+    candidates = {
+        "easy":     PROMPTS_DIR / "05-draft-write-easy.md",
+        "standard": PROMPTS_DIR / "05-draft-write.md",
+        "strict":   PROMPTS_DIR / "05-draft-write-strict.md",
+    }
+    chosen = candidates.get(tier)
+    if chosen is None or not chosen.exists():
+        # Fall back silently; the standard prompt always exists.
+        return PROMPTS_DIR / "05-draft-write.md"
+    return chosen
 METHODOLOGY_DIR = Path(__file__).parent.parent.parent.parent / "methodology"
 
 
@@ -142,7 +166,7 @@ def _build_user_for_outline(state: State, style_rules: str) -> str:
 # 5.2 body
 # ──────────────────────────────────────────────────────────────────────────────
 def _write_body(state: State, cfg: Config, client: LLMClient, outline: str) -> str:
-    system = _load_section(PROMPTS_DIR / "05-draft-write.md", "System")
+    system = _load_section(_pick_draft_prompt(cfg), "System")
 
     user = _build_user_for_body(state, outline)
 

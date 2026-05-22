@@ -2,9 +2,22 @@
 
 > 把 1.5 小时科技发布会 → 一份飞书友好的图文复盘简报。
 
+[![CI](https://github.com/Scarlett9826/keynote-recap/actions/workflows/ci.yml/badge.svg)](https://github.com/Scarlett9826/keynote-recap/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 ![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue)
 ![Status: M2 quality baseline](https://img.shields.io/badge/status-M2_quality_baseline-green)
+
+<p align="center">
+  <img src="docs/assets/hero.png" alt="keynote-recap report — Google I/O 2026 整体概要 callout" width="820">
+  <br>
+  <em>↑ Google I/O '26 实测产出（v10）：飞书友好的整体概要 callout + 分层叙述</em>
+</p>
+
+<p align="center">
+  <img src="docs/assets/hero-demo.png" alt="章节内含演示截图与字幕引用" width="820">
+  <br>
+  <em>↑ 每个产品板块至少 1 张关键帧（自动从 1080p60 视频抽取）</em>
+</p>
 
 ---
 

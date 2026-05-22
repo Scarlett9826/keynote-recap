@@ -134,6 +134,28 @@ tr:nth-child(even) { background: var(--table-stripe); }
         background: linear-gradient(135deg, rgba(88,166,255,0.10), rgba(88,166,255,0.04));
     }
 }
+.quality-banner {
+    background: #fff8e6;
+    border: 2px solid #d99100;
+    border-left: 6px solid #d99100;
+    border-radius: 6px;
+    padding: 16px 20px;
+    margin: 0 0 28px;
+    color: #5c4500;
+}
+.quality-banner strong { font-size: 16px; }
+.quality-banner p { margin: 8px 0; }
+.quality-banner ul { margin: 8px 0 8px 22px; }
+.quality-banner li { margin: 2px 0; line-height: 1.5; }
+.quality-banner-tip { font-size: 13px; color: #7a6500; }
+@media (prefers-color-scheme: dark) {
+    .quality-banner {
+        background: rgba(217, 145, 0, 0.08);
+        color: #e8c474;
+        border-color: #d99100;
+    }
+    .quality-banner-tip { color: #c9a043; }
+}
 </style>
 """
 
@@ -167,6 +189,27 @@ def run(state: State, cfg: Config) -> State:
 
     title = state.video.title if state.video else md_path.stem
 
+    # ─── Quality warning banner (M5) ───
+    # If quality gate failed even after retry, surface a clearly-visible
+    # banner above the report so humans know not to publish without review.
+    banner_html = ""
+    if not getattr(state, "quality_passed", True) and getattr(state, "final_quality_warnings", []):
+        warnings_html = "".join(
+            f"<li>{_escape(w)}</li>" for w in state.final_quality_warnings
+        )
+        banner_html = f"""
+<div class="quality-banner">
+  <strong>⚠ 本报告未通过质量门</strong>
+  <p>已自动重跑 draft 一次，仍存在以下未达标项目。请人工审阅后再发布：</p>
+  <ul>{warnings_html}</ul>
+  <p class="quality-banner-tip">
+    建议：换一个更强的多模态模型（如 <code>gemini-2.5-pro</code> /
+    <code>claude-opus-4</code>），或运行 <code>keynote-recap doctor</code>
+    检查模型能力，再用 <code>--start-stage 5</code> 重跑 draft。
+  </p>
+</div>
+"""
+
     html_full = f"""<!doctype html>
 <html lang="zh-CN">
 <head>
@@ -176,7 +219,7 @@ def run(state: State, cfg: Config) -> State:
 {CSS}
 </head>
 <body>
-{html_body}
+{banner_html}{html_body}
 </body>
 </html>"""
 
@@ -189,6 +232,16 @@ def run(state: State, cfg: Config) -> State:
     console.print(f"  Wrote {html_path.name} ({size_str})")
     console.print("[green]✓ Stage 6 done[/]\n")
     return state
+
+
+def _escape(s: str) -> str:
+    """Minimal HTML escape for banner text."""
+    return (
+        s.replace("&", "&amp;")
+         .replace("<", "&lt;")
+         .replace(">", "&gt;")
+         .replace('"', "&quot;")
+    )
 
 
 def _embed_image(match: re.Match, base_dir: Path) -> str:

@@ -457,11 +457,17 @@ def test_llm_override_only_sets_draft():
 # ──────────────────────────────────────────────────────────────────────────────
 # Draft tier selection (P2 — small model support)
 # ──────────────────────────────────────────────────────────────────────────────
-def test_draft_tier_default_is_standard():
+def test_draft_tier_default_is_strict():
+    """M5: default tier is now 'strict' — methodology rules are hard contract.
+
+    Users who run the tool with no flags should get the strictest quality gate
+    (forbidden phrases, ≥ 8 citations, every chapter has 核心判断, etc).
+    Pass --tier easy / --tier standard to relax for weaker models.
+    """
     from keynote_recap.config import load_config
 
     cfg = load_config()
-    assert cfg.draft.tier == "standard"
+    assert cfg.draft.tier == "strict"
 
 
 def test_draft_tier_picks_easy_prompt():
@@ -596,3 +602,141 @@ def test_gemini_only_preset_uses_gemini_for_vision_stages():
     cfg = Config.model_validate(data)
     assert "gemini" in cfg.llm.models.extract.lower()
     assert "gemini" in cfg.llm.models.verify.lower()
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# M5 — Quality gate hard-fail + retry mechanism
+# ──────────────────────────────────────────────────────────────────────────────
+def test_state_has_quality_gate_fields():
+    """State must persist the four hard-fail flags + retry counter (M5)."""
+    from keynote_recap.state import State
+
+    s = State.new(url="x", output_dir="/tmp/x")
+    # All four hard-fail flags exist with safe defaults
+    assert hasattr(s, "placeholder_detected")
+    assert hasattr(s, "lint_hard_failed")
+    assert hasattr(s, "structure_check_passed")
+    assert hasattr(s, "coverage_check_passed")
+    # Retry counter starts at 0
+    assert s.draft_retry_count == 0
+    # Quality status defaults: passed=True, no warnings
+    assert s.quality_passed is True
+    assert s.final_quality_warnings == []
+
+
+def test_collect_quality_failures_empty_when_all_pass():
+    """Pipeline helper returns empty list when all gates pass."""
+    from keynote_recap.pipeline import _collect_quality_failures
+    from keynote_recap.state import State
+
+    s = State.new(url="x", output_dir="/tmp/x")
+    s.coverage_check_passed = True
+    s.structure_check_passed = True
+    s.placeholder_detected = False
+    s.lint_hard_failed = False
+    assert _collect_quality_failures(s) == []
+
+
+def test_collect_quality_failures_detects_each_gate():
+    """Each hard-fail flag produces a distinct issue line."""
+    from keynote_recap.pipeline import _collect_quality_failures
+    from keynote_recap.state import State
+
+    s = State.new(url="x", output_dir="/tmp/x")
+    s.coverage_check_passed = False
+    s.structure_check_passed = False
+    s.placeholder_detected = True
+    s.lint_hard_failed = True
+    issues = _collect_quality_failures(s)
+    assert len(issues) == 4
+    # Each issue mentions its stage number for traceability
+    joined = " ".join(issues)
+    assert "5.5.0" in joined
+    assert "5.5.1" in joined
+    assert "5.5.3" in joined
+    assert "5.5.5" in joined
+
+
+def test_render_banner_appears_when_quality_failed():
+    """Render stage emits a yellow warning banner when quality_passed=False."""
+    import tempfile
+    from pathlib import Path
+
+    from keynote_recap.config import load_config
+    from keynote_recap.stages.render import run as render_run
+    from keynote_recap.state import State, VideoMeta
+
+    with tempfile.TemporaryDirectory() as tmp:
+        outdir = Path(tmp)
+        # Minimal report.md
+        md = outdir / "report.md"
+        md.write_text("# Test\n\n## 一、demo\n\nbody\n")
+
+        s = State.new(url="https://x", output_dir=str(outdir))
+        s.video = VideoMeta(url="https://x", title="Test")
+        s.report_md_path = str(md)
+        s.quality_passed = False
+        s.final_quality_warnings = ["5.5.0 image filename: invented placeholder names"]
+
+        cfg = load_config()
+        s = render_run(s, cfg)
+
+        html = Path(s.report_html_path).read_text()
+        assert "quality-banner" in html
+        assert "未通过质量门" in html
+        assert "invented placeholder names" in html
+
+
+def test_render_no_banner_when_quality_passed():
+    """No banner when quality_passed=True (default)."""
+    import tempfile
+    from pathlib import Path
+
+    from keynote_recap.config import load_config
+    from keynote_recap.stages.render import run as render_run
+    from keynote_recap.state import State, VideoMeta
+
+    with tempfile.TemporaryDirectory() as tmp:
+        outdir = Path(tmp)
+        md = outdir / "report.md"
+        md.write_text("# Test\n\n## 一、demo\n\nbody\n")
+
+        s = State.new(url="https://x", output_dir=str(outdir))
+        s.video = VideoMeta(url="https://x", title="Test")
+        s.report_md_path = str(md)
+        # quality_passed defaults to True
+
+        cfg = load_config()
+        s = render_run(s, cfg)
+        html = Path(s.report_html_path).read_text()
+        # CSS class definition is always present; check the banner div isn't rendered
+        assert '<div class="quality-banner">' not in html
+        assert "未通过质量门" not in html
+
+
+def test_draft_user_prompt_warns_against_placeholder_names():
+    """draft.py user prompt must contain the 3 forbidden placeholder examples."""
+    from keynote_recap.stages.draft import _build_user_for_body
+    from keynote_recap.state import SelectedFrame, State, VideoMeta
+
+    s = State.new(url="https://x", output_dir="/tmp/x")
+    s.video = VideoMeta(url="https://x", title="t", duration_s=600.0, transcript="")
+    s.selected_frames = [SelectedFrame(
+        filename="frame_00457.jpg",
+        timestamp_s=10.0,
+        category="demo",
+        caption="test caption",
+        recommended_section="一、demo",
+        info_density=0.8,
+        relevance=0.9,
+    )]
+
+    user_prompt = _build_user_for_body(s, "## 一、demo\n")
+    # Forbidden placeholder examples must be visible to the LLM
+    assert "frame_gt_01" in user_prompt
+    assert "01-spark-intro" in user_prompt
+    assert "frame_intro" in user_prompt
+    # Real filename appears verbatim
+    assert "frame_00457.jpg" in user_prompt
+    # Self-check instruction is present
+    assert "输出前自检" in user_prompt

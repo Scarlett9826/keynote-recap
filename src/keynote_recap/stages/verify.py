@@ -461,12 +461,13 @@ def run(state: State, cfg: Config) -> State:
     report_md = Path(state.report_md_path).read_text()
     output_dir = Path(state.output_dir)
 
-    # 5.5.0 — image filename existence
+    # 5.5.0 — image filename existence (HARD GATE: triggers retry)
     fnchk = check_image_filenames(report_md, output_dir)
+    state.placeholder_detected = not fnchk["all_pass"]
     if fnchk["all_pass"]:
         console.print(f"  [5.5.0] image filenames: ✓ all {fnchk['total_refs']} exist")
     else:
-        console.print(f"  [5.5.0] image filenames: [red]✗ {len(fnchk['missing'])} / {fnchk['total_refs']} missing[/]")
+        console.print(f"  [5.5.0] image filenames: [red]✗ {len(fnchk['missing'])} / {fnchk['total_refs']} missing (placeholder detected)[/]")
         for m in fnchk["missing"][:5]:
             console.print(f"          - {m}")
         if len(fnchk["missing"]) > 5:
@@ -482,10 +483,16 @@ def run(state: State, cfg: Config) -> State:
         for m in cov["missing"]:
             console.print(f"          - {m}")
 
-    # 5.5.3
+    # 5.5.3 — anti-AI lint (HARD GATE: L1 errors trigger retry)
     lint = lint_report(report_md)
+    state.lint_hard_failed = bool(lint["level1"])
     if lint["level1"]:
-        console.print(f"  [5.5.3] lint: [red]{len(lint['level1'])} L1 errors[/]")
+        console.print(f"  [5.5.3] lint: [red]{len(lint['level1'])} L1 errors (hard fail)[/]")
+        for err in lint["level1"][:5]:
+            rule = err.get("rule", "?")
+            found = err.get("found", "")
+            ln = err.get("line", 0)
+            console.print(f"          - line {ln} {rule}: {found}")
     if lint["level2"]:
         console.print(f"  [5.5.3] lint: [yellow]{len(lint['level2'])} L2 warnings[/]")
     if not lint["level1"] and not lint["level2"]:

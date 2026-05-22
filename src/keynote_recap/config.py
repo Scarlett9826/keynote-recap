@@ -92,11 +92,18 @@ class DraftConfig(BaseModel):
     #           Suitable for medium-capability multimodal models
     #           (gemini-2.5-flash, qwen-vl-max, llama-3.1-vision).
     # standard: current 21 forbidden phrases, 25-40 images, ≥ 10 citations.
-    #           The default; works on claude-sonnet-4 / gpt-4o /
-    #           gemini-2.5-pro.
+    #           Works on claude-sonnet-4 / gpt-4o / gemini-2.5-pro.
     # strict:   tighter constraints (≤ 25 char sentences, ≥ 2 citations
     #           per section). Recommended for claude-opus-4.
-    tier: str = "standard"
+    #
+    # Default is "strict" (M5): the report is contract-bound to the
+    # methodology — no forbidden phrases, every chapter must have a
+    # 核心判断, ≥ 2 citations per chapter, etc. The pipeline will retry
+    # draft once if any hard rule fails; if it still fails, a yellow
+    # warning banner is added to the rendered HTML.
+    # If you're using a weaker LLM, pass `--tier easy` (or `--tier standard`)
+    # to relax constraints rather than seeing low-quality output.
+    tier: str = "strict"
 
 
 class Config(BaseModel):

@@ -38,6 +38,31 @@ STAGES: dict[str, tuple[float, Callable[[State, Config], State]]] = {
 }
 
 
+def _collect_quality_failures(state: State) -> list[str]:
+    """Inspect verify-stage flags on state; return human-readable failure list.
+
+    Empty list → quality gate passed; non-empty → retry draft once
+    (or, after retry, surface as banner warnings on the rendered report).
+    """
+    issues: list[str] = []
+    if state.placeholder_detected:
+        issues.append(
+            "5.5.0 image filename: report references frame files that don't exist "
+            "(LLM invented placeholder names instead of using selected_frames list)"
+        )
+    if not state.coverage_check_passed:
+        issues.append("5.5.1 coverage: one or more chapters missing images")
+    if state.lint_hard_failed:
+        issues.append(
+            "5.5.3 anti-AI lint: forbidden phrases/emoji/transcription tells found"
+        )
+    if not state.structure_check_passed:
+        issues.append(
+            "5.5.5 structure: missing 核心判断/quotes/tables, or chapter heading malformed"
+        )
+    return issues
+
+
 def run_pipeline(
     *,
     url: str,
@@ -73,6 +98,46 @@ def run_pipeline(
             if debug:
                 raise
             return state
+
+        # ─── Quality gate (after stage 5.5 verify): retry draft once if hard-fail ───
+        if num == 5.5 and state.draft_retry_count == 0:
+            hard_fails = _collect_quality_failures(state)
+            if hard_fails:
+                console.print(
+                    f"\n[bold yellow]⚠ Quality gate failed:[/] "
+                    f"{len(hard_fails)} hard issues detected — re-running draft once.\n"
+                )
+                for issue in hard_fails:
+                    console.print(f"   • {issue}")
+                state.draft_retry_count = 1
+                # Roll back to before stage 5 so draft + verify re-run
+                state.last_completed_stage = 4.0
+                state.save()
+                # Re-run stage 5 (draft) and stage 5.5 (verify) inline
+                try:
+                    state = STAGES["draft"][1](state, config)
+                    state = STAGES["verify"][1](state, config)
+                except Exception as e:
+                    console.print(f"[bold red]Retry draft/verify failed:[/] {e}")
+                    state.save()
+                    if debug:
+                        raise
+                    return state
+                # After retry, record any remaining failures as warnings (but proceed)
+                still_failing = _collect_quality_failures(state)
+                if still_failing:
+                    state.quality_passed = False
+                    state.final_quality_warnings = still_failing
+                    console.print(
+                        f"\n[bold yellow]⚠ Retry still failed[/]: "
+                        f"{len(still_failing)} issues remain — banner will be added to report.\n"
+                    )
+                    for issue in still_failing:
+                        console.print(f"   • {issue}")
+                else:
+                    state.quality_passed = True
+                    console.print("[green]✓ Quality gate passed after retry[/]\n")
+                state.save()
 
         # Checkpoint pause
         if checkpoint and num in config.stages.checkpoints and num < end_stage:

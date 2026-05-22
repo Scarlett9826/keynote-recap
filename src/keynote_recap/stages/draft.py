@@ -193,15 +193,19 @@ def _build_user_for_body(state: State, outline: str) -> str:
             pass
 
     # Build a numbered, very explicit frame list emphasizing the EXACT filename.
+    # CRITICAL: keep `f.filename` verbatim — do NOT reconstruct from parts.
+    # Past bug: rebuilt filename from `f.filename.split('_')[1]` lost the .jpg
+    # suffix and confused the LLM into inventing semantic names like
+    # `frame_gt_01.jpg` instead of using `frame_00457.jpg`.
     frames_block = "\n".join(
-        f"[{i+1}] FILENAME=`frame_{f.filename.split('_')[1]}` "
-        f"({format_duration(f.timestamp_s)}, {f.recommended_section})\n"
-        f"     正确引用方式: `![<caption中文>](frames/{f.filename})`\n"
+        f"[{i+1}] filename: `{f.filename}` "
+        f"  ({format_duration(f.timestamp_s)} → {f.recommended_section})\n"
+        f"     引用语法: ![{f.caption[:60]}](frames/{f.filename})\n"
         f"     caption: {f.caption}"
         for i, f in enumerate(state.selected_frames)
     )
 
-    # All allowed filenames as a flat list for easy verification by LLM
+    # All allowed filenames as a flat list for easy verification by LLM.
     allowed_filenames = ", ".join(f.filename for f in state.selected_frames)
 
     return f"""# 视频信息
@@ -240,6 +244,26 @@ def _build_user_for_body(state: State, outline: str) -> str:
 6. 使用 `frames/<filename>` 路径（不是 frames_raw/）
 7. 按发布优先级排章节，不按时间序
 8. 文末必须有：`## 十X、一点观察（独立判断，非发布会原话）` + `## 信源说明`
+
+**⛔ filename 编造 = 最严重错误**
+
+下面是 3 个**绝对禁止**的写法（每条都会让生成的报告里图片显示为损坏）：
+
+```
+❌ ![介绍页](frames/frame_gt_01.jpg)         ← gt_01 是编的语义化名
+❌ ![Spark 平台](frames/01-spark-intro.jpg)  ← 01-spark-intro 不在清单里
+❌ ![待补充](frames/frame_intro.jpg)         ← intro 是你自己起的
+```
+
+正确写法（直接从上方清单里复制 filename，**不要改写、不要简化**）：
+```
+✅ ![Spark 主舞台](frames/{state.selected_frames[0].filename if state.selected_frames else 'frame_00123.jpg'})
+```
+
+**⚠️ 输出前自检**：你写完正文后，扫一遍自己写的所有 `![...](frames/XXX)`：
+- 每个 `XXX` 是不是**字面**出现在上方"已筛选关键帧"列表里？
+- 如果有任何一个不在，**立刻改掉**（从清单里挑一个相邻时间戳的真实 filename 替换）。
+- 不允许出现 `待补充`、`<filename>`、`xx`、`gt_01`、`spark-intro` 这类占位/语义化命名。
 
 **不要**输出整体概要 callout（由 stage 5.3 单独写）。
 **不要**输出 `# 标题`（由最终组装时加）。

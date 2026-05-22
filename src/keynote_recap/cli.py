@@ -62,9 +62,11 @@ def main() -> None:
     "--tier",
     type=click.Choice(["easy", "standard", "strict"]),
     default=None,
-    help="Draft prompt tier (default: standard). 'easy' for medium-capability "
-         "multimodal models (gemini-2.5-flash, qwen-vl-max); 'strict' for "
-         "claude-opus-4 and similar top-tier models.",
+    help="Draft prompt tier (default: strict — methodology rules are hard "
+         "contract: forbidden phrases, ≥ 8 citations, every chapter has "
+         "核心判断). Pass 'easy' for medium-capability multimodal models "
+         "(gemini-2.5-flash, qwen-vl-max); 'standard' for "
+         "claude-sonnet-4 / gpt-4o.",
 )
 @click.option(
     "--start-stage",

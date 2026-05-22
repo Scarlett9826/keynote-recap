@@ -115,8 +115,16 @@ class State(BaseModel):
 
     # ─── Stage 5.5: verify ───
     coverage_check_passed: bool = False
+    structure_check_passed: bool = True   # default True so legacy state.json reload doesn't trigger retry
+    placeholder_detected: bool = False    # 5.5.0: missing frame filenames in report.md
+    lint_hard_failed: bool = False        # 5.5.3: any L1 forbidden phrase / emoji / transcription tell
     caption_verify_path: str = ""
     lint_report_path: str = ""
+
+    # ─── Quality gate retry tracking (M5) ───
+    draft_retry_count: int = 0
+    final_quality_warnings: list[str] = Field(default_factory=list)
+    quality_passed: bool = True
 
     # ─── Stage 6: render ───
     report_html_path: str = ""

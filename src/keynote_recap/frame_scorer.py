@@ -195,15 +195,33 @@ def score_image(img_path: str, verbose: bool = False) -> dict:
     score += skin_penalty
     breakdown["skin_penalty"] = skin_penalty
 
-    # 5) 极端单调 (过场) → 减分
-    if dc > 0.85:
-        mono_penalty = -50
-    elif dc > 0.75:
-        mono_penalty = -20
+    # 5) 极端单调 (过场) → 重罚
+    # M4: 用户反馈仍有大量过场被选；之前 0.85 / 0.75 阈值太宽松，加严。
+    # PPT 通常 dominant 0.4-0.65（一种背景色 + 各种 UI 元素）；过场页 0.7+。
+    if dc > 0.80:
+        mono_penalty = -120     # was -50; bump to "definitely rejected"
+    elif dc > 0.70:
+        mono_penalty = -50      # was -20
+    elif dc > 0.65:
+        mono_penalty = -15      # new tier
     else:
         mono_penalty = 0
     score += mono_penalty
     breakdown["mono_penalty"] = mono_penalty
+
+    # 5b) 「纯标题页 / slogan」检测：低边缘密度 + 大色块 + 少颜色
+    # 特征：1-3 个大字 + 渐变背景。edge 低（无表格无图）+ dc 高 + cr 极低。
+    if (
+        e < 0.05               # very few edges (no graph/table)
+        and dc > 0.55          # large dominant color block
+        and metrics["color_richness"] < 0.20  # few unique colors
+        and metrics["brightness_std"] < 60    # low contrast
+    ):
+        slogan_penalty = -80
+    else:
+        slogan_penalty = 0
+    score += slogan_penalty
+    breakdown["slogan_penalty"] = slogan_penalty
 
     # 6) 远景会场（饱和度低 + 边缘密度也低 + 亮度方差中等）
     if metrics["saturation"] < 50 and e < 0.04 and 30 < metrics["brightness_std"] < 70:

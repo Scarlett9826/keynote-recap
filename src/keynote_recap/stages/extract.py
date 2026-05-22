@@ -111,7 +111,54 @@ def run(state: State, cfg: Config) -> State:
 
             progress.advance(task, advance=len(batch))
 
-    # Cap to final_count_max — in case LLM was too generous
+    # ─── Floor enforcement: rescue pass if LLM was too conservative ───
+    # M4 fix: previously we only capped to max; if LLM rejected too aggressively
+    # we'd silently produce a 12-image report. Now if we're under the floor,
+    # we promote rejected frames back from highest scorer score.
+    if len(selected) < cfg.frame_filter.final_count_min:
+        gap = cfg.frame_filter.final_count_min - len(selected)
+        console.print(
+            f"  [yellow]Selected only {len(selected)} (floor: "
+            f"{cfg.frame_filter.final_count_min}); promoting top {gap} "
+            f"rejected by scorer score[/]"
+        )
+        selected_names = {f.filename for f in selected}
+        # Sort rejected by original scorer score (descending)
+        rejected_with_score = []
+        for r in rejected:
+            fname = r.get("filename", "")
+            if fname in selected_names:
+                continue
+            cand = next((c for c in candidates if c.filename == fname), None)
+            if cand is None:
+                continue
+            rejected_with_score.append((cand, r))
+        rejected_with_score.sort(key=lambda x: x[0].score, reverse=True)
+
+        promoted = 0
+        for cand, _r in rejected_with_score:
+            if promoted >= gap:
+                break
+            selected.append(SelectedFrame(
+                filename=cand.filename,
+                timestamp_s=cand.timestamp_s,
+                category="other",
+                caption=f"[补救入选] 来自 {format_duration(cand.timestamp_s)} "
+                        f"附近的画面（演讲上下文：{cand.context_subtitle[:120]}）",
+                recommended_section="",
+                info_density=0.6,
+                relevance=0.6,
+                source="frame_extract_rescue",
+            ))
+            promoted += 1
+        console.print(f"  [yellow]Promoted {promoted} frames; total now {len(selected)}[/]")
+
+    # ─── Global deduplication by perceptual hash ───
+    # Two near-identical frames (e.g. consecutive samples of the same slide)
+    # get collapsed; we keep the one with higher info_density.
+    selected = _dedupe_by_phash(selected, frames_dir)
+
+    # Cap to final_count_max — in case rescue + dedupe still left too many
     if len(selected) > cfg.frame_filter.final_count_max:
         selected.sort(key=lambda f: (f.info_density + f.relevance), reverse=True)
         selected = selected[: cfg.frame_filter.final_count_max]
@@ -221,14 +268,103 @@ def _build_user_text(
         lines.append(f"- 当时字幕（±15s）：{ctx}")
         lines.append("")
 
+    # Per-batch quota: each batch must aim to keep ~50-65% so the cumulative
+    # selection across all batches lands in the global 35-50 floor/ceiling.
+    # Without this, batch-level LLMs uniformly reject "marginal" frames and
+    # the global count collapses to ~15 — the symptom users reported.
+    keep_floor = max(4, int(len(batch) * 0.50))
+    keep_ceil = max(keep_floor + 1, int(len(batch) * 0.70))
+
     lines.append("---")
     lines.append("")
-    lines.append("请按三原则筛选这批 frame，输出 JSON。"
-                 "selected_frames 中只保留信息量足、相关、不重复的；"
-                 "rejected_frames 中放被拒的（必须给 rejection_reason）。"
-                 "图片按上面顺序与正文 frame_NN 对应。")
+    lines.append(
+        f"## 本批筛选硬约束（必读）\n\n"
+        f"**本批 {len(batch)} 张，必须保留 {keep_floor}-{keep_ceil} 张。**\n\n"
+        f"原因：本任务全局目标 35-50 张，分多批处理。如果你只保留 1-2 张，"
+        f"全局会塌陷到 < 20 张（已发生过）。\n\n"
+        f"### 数量优先于完美\n\n"
+        f"- 如果一张图**不是**演讲者特写/纯黑过场/纯 slogan 标题页，**就保留**\n"
+        f"- 「PPT 不算特别精彩」**不是**拒绝理由 → 保留\n"
+        f"- 「内容和上一张有点像」**不是**拒绝理由 → 全局去重在后面单独做\n"
+        f"- 演讲者远景但 PPT 占主体 → 保留\n"
+        f"- demo 截图但有产品 UI → 保留\n\n"
+        f"### 必须拒绝（仅这些情况）\n\n"
+        f"- 演讲者特写脸占主体（PPT 不可见）\n"
+        f"- 纯黑/纯白/纯渐变过场\n"
+        f"- 仅 slogan 文字（如 'Bring any idea to life'）\n"
+        f"- 全屏品牌 logo（如 Google 大字）\n\n"
+        f"输出 JSON。selected_frames 至少 {keep_floor} 项，rejected_frames "
+        f"必须给 rejection_reason。图片按上面顺序与正文 frame_NN 对应。"
+    )
 
     return "\n".join(lines)
+
+
+def _dedupe_by_phash(
+    selected: list[SelectedFrame], frames_dir: Path, hamming_threshold: int = 6
+) -> list[SelectedFrame]:
+    """Drop near-duplicate frames using a 64-bit perceptual hash (PIL only).
+
+    For pairs within ``hamming_threshold`` Hamming distance, keep the frame
+    with the higher (info_density + relevance) score. This catches the common
+    case where stage 2 sampled multiple frames within a few seconds of the
+    same slide.
+    """
+    try:
+        from PIL import Image
+    except ImportError:
+        return selected
+
+    def _phash(path: Path) -> int:
+        try:
+            img = Image.open(path).convert("L").resize((9, 8))
+            pixels = list(img.getdata())
+            # 8 rows of 9 pixels → 8 bits per row → 64 bits total
+            bits = 0
+            for row in range(8):
+                row_pixels = pixels[row * 9 : row * 9 + 9]
+                for col in range(8):
+                    if row_pixels[col] > row_pixels[col + 1]:
+                        bits = (bits << 1) | 1
+                    else:
+                        bits = bits << 1
+            return bits
+        except Exception:
+            return 0
+
+    def _hamming(a: int, b: int) -> int:
+        return bin(a ^ b).count("1")
+
+    # Compute hashes for each selected frame
+    hashes: dict[str, int] = {}
+    for f in selected:
+        p = frames_dir / f.filename
+        if p.exists():
+            hashes[f.filename] = _phash(p)
+
+    # Sort by (info_density + relevance) descending — higher quality wins
+    sorted_frames = sorted(
+        selected, key=lambda f: f.info_density + f.relevance, reverse=True
+    )
+
+    kept: list[SelectedFrame] = []
+    kept_hashes: list[int] = []
+    drops = 0
+    for f in sorted_frames:
+        h = hashes.get(f.filename, 0)
+        if h == 0:
+            kept.append(f)
+            continue
+        is_dup = any(_hamming(h, kh) <= hamming_threshold for kh in kept_hashes)
+        if is_dup:
+            drops += 1
+            continue
+        kept.append(f)
+        kept_hashes.append(h)
+
+    if drops:
+        console.print(f"  [dim]Dedup: dropped {drops} near-duplicate frames[/]")
+    return kept
 
 
 def _merge_batch_result(

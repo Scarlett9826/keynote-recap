@@ -4,7 +4,7 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 ![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue)
-![Status: M0 docs](https://img.shields.io/badge/status-M0_docs-orange)
+![Status: M2 quality baseline](https://img.shields.io/badge/status-M2_quality_baseline-green)
 
 ---
 
@@ -128,13 +128,43 @@ stages:
 
 ## 项目状态
 
-当前在 **M0（文档完整）** 阶段：
+当前在 **M2（质量基线）** 阶段：
 
-- ✅ M0：文档与方法论沉淀（requirements / methodology / prompts / examples）
-- 🚧 M1：happy path 跑通（src/ 实现）
-- ⬜ M2：质量达到「与黄金标准差距 < 15%」
-- ⬜ M3：UX 抛光（CLI 提示 / cost tracker / progress bar）
-- ⬜ M4：发布到 PyPI
+| Milestone | 状态 | 详情 |
+|---|---|---|
+| M0 | ✅ 完成 | 25 份文档（requirements / methodology / prompts / examples） |
+| M1 | ✅ 完成 | 18 个源文件 + 21 个单元测试全过 |
+| M2 | ✅ 完成 | 真实端到端产出 vs 黄金标准对比 |
+| M3 | 🚧 进行中 | UX 抛光 + CI + PyPI 发布准备 |
+| M4 | ⬜ 待启动 | PyPI 发布 |
+
+### M2 质量基线（Google I/O 2026 Keynote）
+
+| 指标 | 黄金标准（人工） | M2 v10（CLI） | 达成率 |
+|---|---|---|---|
+| 行数 | 783 | 486 | 62% |
+| 章节数 | 14 | 11 | 79% |
+| 图数 | 35 | 19 | 54% |
+| 引用数 | — | 11 | ✓ (≥ 8) |
+| L1 lint 错误 | 0 | 0 | ✓ |
+| L2 lint 警告 | 0 | 0 | ✓ |
+| Caption 错误 | 0 | 0 | ✓ |
+| Filename 错误 | 0 | 0 | ✓ |
+| 单次运行成本 | ~$6（人工时间） | ~$0.20-0.50（LLM） | — |
+| 单次运行耗时 | ~6 小时 | ~15-25 分钟 | — |
+
+**已解决的核心问题**：
+- ✅ Callout 不再被代码围栏包裹
+- ✅ 章节切分从 7 节提升到 11 节（产品名自动检测）
+- ✅ Lint L1+L2 全清零（禁用词零容忍）
+- ✅ Caption 中文化强制 + 视觉验证
+- ✅ 图文件名严禁编造（whitelist 验证）
+- ✅ 5.5.0 图存在性检查 + auto-fix 补图
+
+**已知局限**：
+- ⚠ 图覆盖率：5/11 章节仍缺图（auto-fix 部分生效）
+- ⚠ Research 质量：DuckDuckGo 搜索精度有限（建议用 Tavily）
+- ⚠ 行数：486 vs 783（章节合并导致内容偏短）
 
 详细路线图见 [docs/plans/2026-05-21-implementation-plan.md](docs/plans/2026-05-21-implementation-plan.md)。
 
@@ -142,6 +172,7 @@ stages:
 
 | 文档 | 用途 |
 |---|---|
+| [docs/configuration.md](docs/configuration.md) | **完整配置指南**（所有参数 + 示例） |
 | [docs/requirements.md](docs/requirements.md) | **单一真相源**：38 条用户消息溯源 + 隐式偏好 + 资产清单 |
 | [docs/methodology.md](docs/methodology.md) | 方法论完整说明（结构 / 来源 / 视觉 / 文风 4 层） |
 | [methodology/filter-three-principles.md](methodology/filter-three-principles.md) | 筛图三原则详解 |

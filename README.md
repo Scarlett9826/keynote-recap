@@ -25,6 +25,32 @@
 >
 > **想自己跑一遍？** 看 [USAGE.md](USAGE.md)（30 分钟产出高质量复盘的完整指南）。
 
+## 重要：模型选择
+
+本项目对 LLM 能力有硬要求，**不是任何模型都能跑通**。在你开跑之前请先核对：
+
+| 能力 | 是否必需 | 哪些 stage 用到 | 不满足会怎样 |
+|---|---|---|---|
+| **多模态（看图）** | **必需** | Stage 3 筛图、Stage 5.5.2 caption 验证 | 模型会基于字幕"猜"图片内容，输出看似合规但全是幻觉的 caption |
+| **长上下文 ≥ 100K** | 必需 | Stage 3、Stage 5 写作 | 字幕 + 80 张候选帧会触发截断，JSON 解析失败 |
+| **强指令遵循** | 强烈推荐 | Stage 5.1/5.2 大纲与写作 | 21 个禁用词、章节切分、行数控制等约束会漏 |
+
+**已验证可用的模型**：
+
+| 模型 | 多模态 | 长上下文 | 推荐场景 |
+|---|---|---|---|
+| `claude-opus-4` / `claude-sonnet-4` | ✅ | 200K | 全栈推荐（最稳） |
+| `gemini-2.5-pro` | ✅ | 1M | 全栈推荐（性价比最高，M2 baseline 用的就是它） |
+| `gpt-4o` / `gpt-4-turbo` | ✅ | 128K | 全栈可用 |
+
+**已知不能直接跑通的模型**：
+
+- 任何**纯文本模型**（无多模态能力，包括 `gpt-4o-mini` 文本版、`mimo-2.5-pro`、`deepseek-v3`、`qwen-max` 文本版等）—— Stage 3 / Stage 5.5.2 会 silent failure
+- 上下文 < 64K 的模型 —— Stage 3 字幕全文 + 80 帧会截断
+- 中等指令遵循模型 —— 即使是多模态版，禁用词清单、章节切分约束容易漏
+
+如果你的网关只能用纯文本或中等模型，建议**等 v0.2 版本**——届时会提供 easy tier prompt + capability probe + 自动降级。当前 v0.1 假设你用的是上面"已验证可用"列表里的模型。
+
 ## 5 分钟上手
 
 ```bash
@@ -32,9 +58,10 @@
 pip install keynote-recap
 
 # 2. 配置 LLM（任意 OpenAI 兼容 endpoint）
+#    必须是多模态模型（看图能力），见上方"模型选择"章节
 export OPENAI_API_KEY=sk-xxx
 export OPENAI_BASE_URL=https://api.openai.com/v1   # 或 anthropic/zhipu/etc.
-export KEYNOTE_RECAP_MODEL=claude-opus-4
+export KEYNOTE_RECAP_MODEL=claude-opus-4           # 或 gemini-2.5-pro / gpt-4o
 
 # 3. 跑一份复盘
 keynote-recap recap https://www.youtube.com/watch?v=wYSncx9zLIU \

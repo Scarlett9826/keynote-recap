@@ -1,0 +1,44 @@
+# keynote-recap — preset for OpenAI-only gateways
+# Use case: your gateway only routes OpenAI models. GPT-4o handles all 4 LLM
+# stages (it's multimodal); use GPT-4o-mini for research to save cost.
+#
+# Cost estimate (1.5h keynote): ~$1.20 with GPT-4o draft.
+#
+# IMPORTANT: do NOT use gpt-4o-mini for extract/verify — it's listed as
+# known-text-only because its vision is unreliable for our workload (the
+# preflight check will block it).
+#
+# Copy to ~/.config/keynote-recap/config.yaml and tweak.
+
+llm:
+  provider: openai-compatible
+  base_url: https://api.openai.com/v1
+  api_key_env: OPENAI_API_KEY
+  timeout_s: 600
+  max_retries: 3
+
+  models:
+    extract: gpt-4o              # vision; mini won't work
+    research: gpt-4o-mini        # text-only OK here (no images involved)
+    draft: gpt-4o                # main writer
+    verify: gpt-4o               # vision again
+    transcribe: gpt-4o           # rarely used
+
+draft:
+  tier: standard   # GPT-4o handles standard tier
+
+search:
+  provider: duckduckgo
+  max_queries: 30
+  max_webfetch: 50
+
+video:
+  resolution: 1080p60
+  keep_video: true
+
+frame_filter:
+  candidate_count: 80
+  final_count_min: 30
+  final_count_max: 50
+
+language: zh

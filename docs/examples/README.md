@@ -1,8 +1,30 @@
-# 黄金标准示例
+# 黄金标准示例 + 配置预设
 
-本目录存放 Google I/O '26 Keynote 复盘项目的实际产出，用作 keynote-recap 项目的**参考实现 + 回归对比目标**。
+本目录有两类内容：
+1. **配置预设**（`config.preset-*.yaml`）：常见网关场景的开箱即用配置
+2. **黄金标准复盘**（`io26-*.md`）：keynote-recap 的回归对比目标
 
-## 文件清单
+## 配置预设
+
+按你的 LLM 网关情况选一个，复制到 `~/.config/keynote-recap/config.yaml`：
+
+| 预设 | 适用场景 | 单次成本 |
+|---|---|---|
+| `config.example.yaml` | 通用示例（含全部字段说明） | 视模型而定 |
+| `config.preset-gemini-only.yaml` | 网关只支持 Gemini | ~$0.40 |
+| `config.preset-claude-only.yaml` | 网关只支持 Anthropic Claude | ~$2.50 |
+| `config.preset-openai-only.yaml` | 网关只支持 OpenAI | ~$1.20 |
+| `config.preset-mixed-cheap.yaml` | OpenRouter 等多 vendor 代理 | ~$0.60 |
+
+```bash
+# 选一个 preset 复制到默认位置
+cp docs/examples/config.preset-gemini-only.yaml ~/.config/keynote-recap/config.yaml
+
+# 跑前体检
+keynote-recap doctor
+```
+
+## 黄金标准
 
 | 文件 | 说明 |
 |---|---|

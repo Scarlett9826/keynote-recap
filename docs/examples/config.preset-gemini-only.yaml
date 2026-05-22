@@ -1,0 +1,42 @@
+# keynote-recap — preset for Google Gemini-only gateways
+# Use case: your gateway only routes Gemini models, OR you want the cheapest
+# verified stack. Gemini 2.5 Pro is the M2 quality baseline reference model.
+#
+# Cost estimate (1.5h keynote): ~$0.40 (Gemini 2.5 Pro is ~30x cheaper than
+# Claude Opus per token, and 1M context = no truncation needed).
+#
+# Copy to ~/.config/keynote-recap/config.yaml and tweak.
+
+llm:
+  provider: openai-compatible
+  base_url: https://generativelanguage.googleapis.com/v1beta/openai
+  api_key_env: GEMINI_API_KEY    # or GOOGLE_API_KEY depending on your gateway
+  timeout_s: 600
+  max_retries: 3
+
+  models:
+    # All-Gemini stack: same model for all stages keeps gateway routing simple.
+    extract: gemini-2.5-pro       # vision filter
+    research: gemini-2.5-flash    # cheap research summarize
+    draft: gemini-2.5-pro         # main writer
+    verify: gemini-2.5-pro        # caption verify (vision)
+    transcribe: gemini-2.5-pro    # subtitle fallback
+
+draft:
+  tier: standard   # Gemini 2.5 Pro handles standard tier reliably (M2 baseline)
+
+search:
+  provider: duckduckgo
+  max_queries: 30
+  max_webfetch: 50
+
+video:
+  resolution: 1080p60
+  keep_video: true
+
+frame_filter:
+  candidate_count: 80
+  final_count_min: 30
+  final_count_max: 50
+
+language: zh

@@ -541,3 +541,58 @@ def test_easy_prompt_has_relaxed_image_count():
     assert "15-40" in content, "easy tier should advertise the looser 15-40 image range"
     # Easy tier should have a citation requirement of 5 (not 10)
     assert "至少 5 个" in content or "≥ 5" in content
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Config presets (P5 — small model support)
+# ──────────────────────────────────────────────────────────────────────────────
+def test_config_presets_exist():
+    """The 4 vendor-specific presets must exist for users to copy from."""
+    from pathlib import Path
+
+    base = Path(__file__).parent.parent / "docs" / "examples"
+    for preset in [
+        "config.preset-gemini-only.yaml",
+        "config.preset-claude-only.yaml",
+        "config.preset-openai-only.yaml",
+        "config.preset-mixed-cheap.yaml",
+    ]:
+        assert (base / preset).exists(), f"missing preset: {preset}"
+
+
+def test_config_presets_parse_as_valid_config():
+    """Each preset must load through Config.model_validate without errors."""
+    from pathlib import Path
+
+    import yaml
+
+    from keynote_recap.config import Config
+
+    base = Path(__file__).parent.parent / "docs" / "examples"
+    presets = list(base.glob("config.preset-*.yaml"))
+    assert len(presets) >= 4, f"expected ≥ 4 presets, found {len(presets)}"
+
+    for preset in presets:
+        with preset.open() as f:
+            data = yaml.safe_load(f)
+        # Must validate against the Config schema
+        cfg = Config.model_validate(data)
+        # Every preset must set vision-stage models to non-empty
+        assert cfg.llm.models.extract, f"{preset.name}: extract model is empty"
+        assert cfg.llm.models.verify, f"{preset.name}: verify model is empty"
+
+
+def test_gemini_only_preset_uses_gemini_for_vision_stages():
+    """The gemini-only preset must route both vision stages to a Gemini model."""
+    from pathlib import Path
+
+    import yaml
+
+    from keynote_recap.config import Config
+
+    p = Path(__file__).parent.parent / "docs" / "examples" / "config.preset-gemini-only.yaml"
+    with p.open() as f:
+        data = yaml.safe_load(f)
+    cfg = Config.model_validate(data)
+    assert "gemini" in cfg.llm.models.extract.lower()
+    assert "gemini" in cfg.llm.models.verify.lower()

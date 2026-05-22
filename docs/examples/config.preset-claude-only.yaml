@@ -1,0 +1,41 @@
+# keynote-recap — preset for Anthropic-only gateways
+# Use case: your LLM gateway only routes claude-* models (or you want to
+# minimize cross-vendor billing). All 5 stages run on Claude.
+#
+# Cost estimate (1.5h keynote): ~$2.50 with claude-opus-4 default.
+# To save ~80%, switch draft to claude-sonnet-4.
+#
+# Copy to ~/.config/keynote-recap/config.yaml and tweak.
+
+llm:
+  provider: openai-compatible
+  base_url: https://api.anthropic.com/v1   # or your proxy
+  api_key_env: ANTHROPIC_API_KEY
+  timeout_s: 600
+  max_retries: 3
+
+  models:
+    extract: claude-sonnet-4              # vision; sonnet sufficient for filtering
+    research: claude-3-5-haiku            # cheap, fast for summarizing search results
+    draft: claude-opus-4                  # the writer benefits from opus
+    verify: claude-sonnet-4               # vision; sonnet again
+    transcribe: claude-sonnet-4           # rarely used (only when YouTube has no subtitles)
+
+draft:
+  tier: strict   # claude-opus-4 handles strict tier well
+
+search:
+  provider: duckduckgo
+  max_queries: 30
+  max_webfetch: 50
+
+video:
+  resolution: 1080p60
+  keep_video: true
+
+frame_filter:
+  candidate_count: 80
+  final_count_min: 30
+  final_count_max: 50
+
+language: zh

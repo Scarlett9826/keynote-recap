@@ -1,0 +1,48 @@
+# keynote-recap — mixed cheap stack (省钱优先)
+# Use case: you have access to multiple vendors and want the cheapest
+# verified path. Different stages use different models based on what each
+# stage actually needs:
+#
+#   - extract / verify: vision only, gemini-2.5-pro (cheap + good vision)
+#   - research: text-heavy summarization, gpt-4o-mini (very cheap)
+#   - draft: high-quality long-form writing, claude-sonnet-4 (faster than
+#     opus, similar quality on standard-tier prompt)
+#
+# Cost estimate (1.5h keynote): ~$0.60.
+#
+# Copy to ~/.config/keynote-recap/config.yaml and tweak.
+
+llm:
+  # Use a multi-model proxy (OpenRouter, your corporate gateway, etc.)
+  # that routes by model name to the right vendor.
+  provider: openai-compatible
+  base_url: https://openrouter.ai/api/v1   # or your proxy
+  api_key_env: OPENROUTER_API_KEY
+  timeout_s: 600
+  max_retries: 3
+
+  models:
+    extract: gemini-2.5-pro              # cheap vision + 1M ctx (no truncation)
+    research: gpt-4o-mini                # cheap text summarize
+    draft: claude-sonnet-4               # high-quality writer at opus discount
+    verify: gemini-2.5-pro               # cheap vision again
+    transcribe: gemini-2.5-pro
+
+draft:
+  tier: standard   # sonnet-4 handles standard tier comfortably
+
+search:
+  provider: duckduckgo
+  max_queries: 30
+  max_webfetch: 50
+
+video:
+  resolution: 1080p60
+  keep_video: true
+
+frame_filter:
+  candidate_count: 80
+  final_count_min: 30
+  final_count_max: 50
+
+language: zh

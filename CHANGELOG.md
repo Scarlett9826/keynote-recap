@@ -6,6 +6,114 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+### Added — M4 (small-model support)
+
+Optimization pass aimed at users on cheaper / medium-capability LLM
+gateways (gemini-2.5-flash, qwen-vl-max, llama-3.1-vision, GPT-4o-mini,
+single-vendor proxies). Goal: meaningful runs on models below
+claude-opus-4 quality, plus fail-fast on models that won't work at all.
+
+#### Vision capability probe (P1)
+
+- `prompts/03-extract-vision-filter.md` and `prompts/05-5-caption-verify.md`
+  now lead with a "Capability self-check" section. Models without vision
+  must reply with the exact prefix `ERROR_NO_VISION_CAPABILITY` and stop,
+  instead of fabricating captions from the subtitle text.
+- `src/keynote_recap/util.py`: `VisionCapabilityError` exception +
+  `detect_vision_capability_error()` helper. The detector tolerates code
+  fences and avoids false-positives on legitimate JSON output.
+- `stages/extract.py`: stage 3 now hard-fails with a clear remediation
+  message ("set KEYNOTE_RECAP_MODEL=gemini-2.5-pro / claude-sonnet-4 /
+  gpt-4o") when the probe fires.
+- `stages/verify.py`: stage 5.5.2 now (a) loads its system prompt from
+  the prompt file (previously hard-coded — a latent bug) and (b) marks
+  the sub-check as skipped with `skip_reason: no_vision_capability` on
+  probe failure rather than crashing 5.5.
+
+#### CLI preflight + `doctor` subcommand
+
+- `src/keynote_recap/preflight.py`: regex-based model classifier with
+  three tiers: verified_multimodal / known_text_only / unknown.
+  Whitelist: claude-{opus,sonnet}-{4,3.5,3.7}, gemini-{1.5,2.0,2.5}-pro,
+  gpt-4o, gpt-4-turbo. Blacklist: mimo-*, gpt-4o-mini, gpt-3.5-*,
+  deepseek-{v3,r1}, qwen-{max,plus,turbo,3.x}, llama-3.x. Tolerant of
+  provider prefixes (`openai/gpt-4o`).
+- `keynote-recap recap`: new preflight check before stage 1; aborts with
+  exit 2 if a vision stage uses a known text-only model. Override with
+  `--force` (which still warns the prompt-level probe will trip).
+- `keynote-recap doctor`: new subcommand for standalone preflight without
+  running the pipeline. Prints resolved per-stage models + capability
+  verdict + reference list.
+- `--llm-all` flag (and `KEYNOTE_RECAP_MODEL_ALL` env var): override ALL
+  4 LLM stages with one model. Existing `--llm` only sets draft, which
+  is the wrong default for users on single-model gateways.
+
+#### Difficulty tiers for the draft prompt (P2)
+
+- `prompts/05-draft-write-easy.md` (2745 chars, -37% vs standard):
+  - 5 forbidden phrases (down from 21)
+  - 15-40 images (down from 25-40 floor)
+  - ≥ 5 citations (down from ≥ 10)
+  - 400-900 lines (down from 600-900)
+  - External methodology links inlined (medium models don't fetch)
+- `prompts/05-draft-write.md`: unchanged; remains the standard tier.
+- `prompts/05-draft-write-strict.md`: incremental constraints on top of
+  standard (≤ 25 char sentences, ≥ 2 citations per section, ≥ 5 tables,
+  9 additional forbidden phrases, "opposing view" paragraph required in
+  every '一点观察' bullet). Recommended for claude-opus-4.
+- `config.py`: `DraftConfig.tier` field (default `standard`).
+- `stages/draft.py`: `_pick_draft_prompt()` resolves tier → file path,
+  falls back to standard on unknown values.
+- `cli.py`: `--tier {easy,standard,strict}` flag; the resolved tier is
+  printed in the recap startup banner.
+
+#### Forward-fill outline checklist (P3)
+
+- `prompts/05-draft-outline.md`: replaced the after-the-fact "self-check
+  for over-merging" instructions (which medium models consistently
+  ignored — they treat output completion as `done` and never loop back)
+  with a forward fill-in table covering 10 commonly-merged product
+  categories (UCP, Neural Expressive, Pics/Stitch/Flow, glasses, Fitbit,
+  Omni, Search, science, TPU, pricing). Models must answer yes/no for
+  each row before writing the outline, then map yes-rows 1:1 to ##
+  sections. Forward checklists are a much stronger signal for medium
+  models than reverse self-checks.
+
+#### Single-gateway config presets
+
+- `docs/examples/config.preset-gemini-only.yaml` — all stages on Gemini
+  2.5 Pro/Flash; ~\$0.40/keynote (M2 baseline reference stack).
+- `docs/examples/config.preset-claude-only.yaml` — all stages on Claude
+  family; sonnet for vision, opus + tier=`strict` for draft; ~\$2.50.
+- `docs/examples/config.preset-openai-only.yaml` — gpt-4o for vision/draft,
+  gpt-4o-mini for research only; ~\$1.20.
+- `docs/examples/config.preset-mixed-cheap.yaml` — multi-vendor proxy
+  (e.g. OpenRouter); gemini for vision, sonnet-4 for draft, gpt-4o-mini
+  for research; ~\$0.60.
+- `docs/examples/README.md`: preset selection table + "doctor before
+  recap" workflow.
+
+#### Documentation
+
+- `README.md`: new "Model Selection" section before the quickstart, with
+  verified vs known-bad model tables. Hot-fixed to main as commit
+  `26ccea9` for users hitting the live link before the rest of v0.2 ships.
+- `USAGE.md`: matching § 1.1.5 with the same tables, plus three usage
+  patterns (`--llm-all`, config-file mixing, CLI override) and the
+  `keynote-recap doctor` workflow.
+
+### Tests
+
+- 28 → 52 (24 new):
+  - 8 for vision capability probe (detector cases, prompt file presence,
+    error subclass, prompt file loading)
+  - 5 for preflight model classifier (verified / text-only / unknown
+    cases across 21 model names) and `--llm-all` scope correctness
+  - 8 for draft tier system (default tier, per-tier file resolution,
+    case-insensitivity, unknown fallback, quantitative size check)
+  - 3 for config presets (existence, schema validation, gemini-only
+    routes vision to Gemini)
+
 ### Added — M3
 - `src/keynote_recap/official_channels.py`: registry of 7 publishers (Google,
   OpenAI, Anthropic, Apple, Meta, Microsoft, NVIDIA) with allow-listed

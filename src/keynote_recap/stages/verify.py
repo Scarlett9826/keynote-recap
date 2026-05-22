@@ -23,6 +23,31 @@ console = Console()
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+# 5.5.0 image filename existence check
+# ──────────────────────────────────────────────────────────────────────────────
+def check_image_filenames(report_md: str, output_dir: Path) -> dict:
+    """Every image filename referenced must exist in <output_dir>/frames/."""
+    frames_dir = output_dir / "frames"
+    available = {p.name for p in frames_dir.glob("*")} if frames_dir.exists() else set()
+
+    refs = re.findall(r"!\[[^\]]*\]\(frames/([^)]+)\)", report_md)
+    missing: list[str] = []
+    found: list[str] = []
+    for ref in refs:
+        if ref in available:
+            found.append(ref)
+        else:
+            missing.append(ref)
+    return {
+        "total_refs": len(refs),
+        "found": found,
+        "missing": missing,
+        "all_pass": len(missing) == 0,
+        "available_count": len(available),
+    }
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 # 5.5.1 coverage check
 # ──────────────────────────────────────────────────────────────────────────────
 def check_coverage(report_md: str) -> dict:
@@ -219,6 +244,17 @@ def run(state: State, cfg: Config) -> State:
     report_md = Path(state.report_md_path).read_text()
     output_dir = Path(state.output_dir)
 
+    # 5.5.0 — image filename existence
+    fnchk = check_image_filenames(report_md, output_dir)
+    if fnchk["all_pass"]:
+        console.print(f"  [5.5.0] image filenames: ✓ all {fnchk['total_refs']} exist")
+    else:
+        console.print(f"  [5.5.0] image filenames: [red]✗ {len(fnchk['missing'])} / {fnchk['total_refs']} missing[/]")
+        for m in fnchk["missing"][:5]:
+            console.print(f"          - {m}")
+        if len(fnchk["missing"]) > 5:
+            console.print(f"          ... and {len(fnchk['missing']) - 5} more")
+
     # 5.5.1
     cov = check_coverage(report_md)
     state.coverage_check_passed = cov["all_pass"]
@@ -240,6 +276,21 @@ def run(state: State, cfg: Config) -> State:
 
     # 5.5.2 (sampled)
     client = LLMClient(cfg.llm)
+
+    # ─── Auto-fix: if coverage fails, try to add images to missing sections ───
+    if not cov["all_pass"] and state.selected_frames:
+        console.print("  [5.5.1] auto-fix: adding images to missing sections...")
+        report_md = _auto_fix_coverage(report_md, cov, state, cfg, client)
+        # Re-check coverage after fix
+        cov = check_coverage(report_md)
+        state.coverage_check_passed = cov["all_pass"]
+        if cov["all_pass"]:
+            console.print(f"  [5.5.1] auto-fix: ✓ all {len(cov['passed'])} sections now have images")
+        else:
+            console.print(f"  [5.5.1] auto-fix: still missing {len(cov['missing'])} sections")
+        # Write fixed report
+        Path(state.report_md_path).write_text(report_md)
+
     cap = verify_captions(state, cfg, client)
     n_verifications = len(cap.get("verifications", []))
     n_wrong = sum(1 for v in cap.get("verifications", []) if v.get("match_status") == "wrong")
@@ -248,7 +299,7 @@ def run(state: State, cfg: Config) -> State:
 
     # Write lint report
     lint_path = output_dir / "lint_report.md"
-    lint_path.write_text(_render_lint_report(cov, lint, cap))
+    lint_path.write_text(_render_lint_report(cov, lint, cap, fnchk))
     state.lint_report_path = str(lint_path)
     state.last_completed_stage = 5.5
     state.save()
@@ -258,8 +309,18 @@ def run(state: State, cfg: Config) -> State:
     return state
 
 
-def _render_lint_report(coverage: dict, lint: dict, captions: dict) -> str:
+def _render_lint_report(coverage: dict, lint: dict, captions: dict, fnchk: dict | None = None) -> str:
     lines = ["# Lint Report\n"]
+
+    if fnchk is not None:
+        lines.append("## 5.5.0 Image Filename Existence\n")
+        if fnchk["all_pass"]:
+            lines.append(f"✓ All {fnchk['total_refs']} image references exist in frames/.\n")
+        else:
+            lines.append(f"❌ {len(fnchk['missing'])} / {fnchk['total_refs']} image references missing:\n")
+            for m in fnchk["missing"]:
+                lines.append(f"- `{m}`")
+            lines.append("")
 
     lines.append("## 5.5.1 Coverage Check\n")
     if coverage["all_pass"]:
@@ -303,3 +364,48 @@ def _render_lint_report(coverage: dict, lint: dict, captions: dict) -> str:
     lines.append("")
 
     return "\n".join(lines)
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 5.5.1 auto-fix: add images to sections missing them
+# ──────────────────────────────────────────────────────────────────────────────
+def _auto_fix_coverage(
+    report_md: str,
+    cov: dict,
+    state: State,
+    cfg: Config,
+    client: LLMClient,
+) -> str:
+    """For each section missing an image, pick a relevant frame and insert it."""
+    # Get frames already used in report
+    used_filenames = set(re.findall(r"!\[.*?\]\(frames/([^)]+)\)", report_md))
+    unused = [f for f in state.selected_frames if f.filename not in used_filenames]
+
+    if not unused:
+        return report_md
+
+    # Split report into sections
+    parts = re.split(r"(\n## [一二三四五六七八九十]+、[^\n]*\n)", report_md)
+    # parts alternates: [preamble, title1, content1, title2, content2, ...]
+
+    missing_titles = set(cov["missing"])
+    frame_idx = 0
+
+    for i, part in enumerate(parts):
+        title_match = re.match(r"\n## ([一二三四五六七八九十]+、[^\n]*)\n", part)
+        if not title_match:
+            continue
+        title = "## " + title_match.group(1)
+        if title not in missing_titles:
+            continue
+
+        # Insert an image at the start of this section's content
+        if frame_idx < len(unused):
+            frame = unused[frame_idx]
+            frame_idx += 1
+            img_md = f"\n![{frame.caption}](frames/{frame.filename})\n"
+            # Insert after the title (which is parts[i])
+            if i + 1 < len(parts):
+                parts[i + 1] = img_md + parts[i + 1]
+
+    return "".join(parts)

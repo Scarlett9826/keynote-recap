@@ -6,7 +6,7 @@ model: claude-sonnet-4 / gpt-4o-vision（必须支持图像输入）
 temperature: 0.2
 max_tokens: 4000
 input: frame_scorer.py 初筛后 N=80 张候选
-output: 最终保留 30-50 张 + 每张 caption + 推荐章节归属
+output: 最终保留 35-50 张 + 每张 caption + 推荐章节归属
 ---
 
 # System
@@ -107,13 +107,13 @@ output: 最终保留 30-50 张 + 每张 caption + 推荐章节归属
 
 ## 筛选要求
 
-1. **目标输出 30-50 张**（具体数取决于视频信息密度）
+1. **目标输出 35-50 张**（硬约束：不可少于 35 张。如果候选帧只有 60 张，至少选 35 张；如果有 80 张候选，至少选 40 张。放宽去重标准——只要 UI/数据/内容有任何差异就保留，不要因为"演讲者姿态不同"或"同一 demo 的下一帧"而拒绝）
 2. **每张保留帧必须有完整中文 caption**——不只是「Spark demo」，而是「Gemini Spark email demo：演讲者口述 prompt → Spark 用 /ghostwriter skill 生成符合本人语气的邮件草稿（屏幕显示三栏式 UI）」
    - **caption 语言：必须中文**。如果图中产品名/UI 是英文，可以保留英文术语，但描述句必须中文。
    - **caption 必须忠实**：只描述图中实际可见的内容；不要把「猜测可能是 Project Astra」写成 caption。如不确定就用图中实际可见的产品名（标题栏、Logo）。
 3. **每张保留帧必须有推荐章节归属**（按发布主题分类）
 4. **info_density 和 relevance_to_section 都 ≥ 0.7**
-5. **同主题去重**：5 张同类 demo 帧 → 保留信息密度最高的 1-2 张
+5. **同主题去重（适度）**：5 张同类 demo 帧 → 保留信息密度最高的 2-3 张（不是 1 张）
 
 ## 反例（必须拒绝）
 

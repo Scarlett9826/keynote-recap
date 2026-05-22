@@ -168,12 +168,17 @@ def _build_user_for_body(state: State, outline: str) -> str:
         except Exception:
             pass
 
+    # Build a numbered, very explicit frame list emphasizing the EXACT filename.
     frames_block = "\n".join(
-        f"- **{f.filename}** @ {format_duration(f.timestamp_s)} | "
-        f"section: {f.recommended_section} | category: {f.category}\n"
-        f"  caption: {f.caption}"
-        for f in state.selected_frames
+        f"[{i+1}] FILENAME=`frame_{f.filename.split('_')[1]}` "
+        f"({format_duration(f.timestamp_s)}, {f.recommended_section})\n"
+        f"     正确引用方式: `![<caption中文>](frames/{f.filename})`\n"
+        f"     caption: {f.caption}"
+        for i, f in enumerate(state.selected_frames)
     )
+
+    # All allowed filenames as a flat list for easy verification by LLM
+    allowed_filenames = ", ".join(f.filename for f in state.selected_frames)
 
     return f"""# 视频信息
 - 标题：{state.video.title}
@@ -195,18 +200,22 @@ def _build_user_for_body(state: State, outline: str) -> str:
 # 已筛选关键帧（{len(state.selected_frames)} 张）— caption 必须直接复用，不要改写
 {frames_block}
 
+# ⚠️ 允许使用的 filename 完整清单（不要使用此清单外的任何文件名）
+{allowed_filenames}
+
 ---
 
 请按 prompts/05-draft-write.md 要求输出**正文部分**（从 `## 一、` 到 `## 信源说明`）。
 
 **关键约束**：
 1. **总图数 25-40 张**（少于 25 张视为质量不达标）—— 你拿到 {len(state.selected_frames)} 张候选，请用 25-35 张
-2. 每个 ## 章节至少 1 张图（违反则会被打回）
-3. 重要章节 4-6 张图，次要章节 2-3 张图
-4. 至少 8 个 `> 📎 **补充信源**：[Source](URL)` 块
-5. 使用 `frames/<filename>` 路径（不是 frames_raw/）
-6. 按发布优先级排章节，不按时间序
-7. 文末必须有：`## 十X、一点观察（独立判断，非发布会原话）` + `## 信源说明`
+2. **filename 严禁编造**——只能用上方"已筛选关键帧"列表中给的真实文件名（形如 `frame_00457.jpg`）。绝对不能写 `frames/01-spark-intro.jpg` 之类的语义化文件名。
+3. 每个 ## 章节至少 1 张图（违反则会被打回）
+4. 重要章节 4-6 张图，次要章节 2-3 张图
+5. 至少 10 个 `> 📎 **补充信源**：[Source](URL)` 块（少于 8 个视为质量不达标）—— 每个主要章节至少 1 个 📎 块
+6. 使用 `frames/<filename>` 路径（不是 frames_raw/）
+7. 按发布优先级排章节，不按时间序
+8. 文末必须有：`## 十X、一点观察（独立判断，非发布会原话）` + `## 信源说明`
 
 **不要**输出整体概要 callout（由 stage 5.3 单独写）。
 **不要**输出 `# 标题`（由最终组装时加）。

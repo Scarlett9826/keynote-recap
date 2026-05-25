@@ -227,6 +227,26 @@ stages:
   checkpoints: [3, 4, 5.5]       # 在这些阶段后暂停，等 user confirm
 ```
 
+### Provider 配置
+
+默认使用 OpenAI 兼容协议（`provider: openai-compatible`）。如果您的 LLM 网关使用 Anthropic 原生协议（例如 Anthropic `/messages` endpoint），设置 `provider: anthropic-native` 即可：
+
+```yaml
+# ~/.config/keynote-recap/config.yaml
+llm:
+  provider: anthropic-native         # v0.3.0 新增
+  base_url: https://your-gateway.example.com/anthropic/v1
+  api_key_env: OPENAI_API_KEY
+  models:
+    extract: your-vendor/claude-sonnet-4-6
+    research: your-vendor/claude-sonnet-4-6
+    draft: your-vendor/claude-opus-4-7
+    verify: your-vendor/claude-sonnet-4-6
+    transcribe: your-vendor/claude-sonnet-4-6
+```
+
+Anthropic SDK 自动追加 `/v1/messages` 到 base_url；代码会正确处理 `/v1` 后缀避免重复。请将 gateway 的完整路径（含 `/v1`）写在 `base_url` 中。
+
 ## 项目状态
 
 当前在 **M2（质量基线）** 阶段：

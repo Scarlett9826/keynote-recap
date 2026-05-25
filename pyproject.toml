@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "keynote-recap"
-version = "0.2.5.1"
+version = "0.3.0"
 description = "Turn 1.5h tech keynote videos into Feishu-friendly illustrated Chinese recap reports."
 readme = "README.md"
 license = { text = "MIT" }
@@ -43,7 +43,7 @@ dependencies = [
 
     # LLM
     "openai>=1.30",                # OpenAI 兼容 client（支持任意兼容 endpoint）
-    "anthropic>=0.30",              # 可选，针对 native Anthropic
+    "anthropic>=0.40",              # 可选，针对 native Anthropic
     "tiktoken>=0.7",                # token 计数
 
     # Image

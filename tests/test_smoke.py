@@ -2246,3 +2246,262 @@ def test_v025_verify_cli_exits_1_for_tampered_md(tmp_path):
     result = runner.invoke(main, ["verify", str(md_path)])
     assert result.exit_code == 1, result.output
     assert "FAIL" in result.output
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# v0.3.0 — anthropic-native provider
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+def _make_anthropic_message(text: str, in_tok: int = 10, out_tok: int = 5):
+    """Build a realistic ``anthropic.types.Message`` for testing."""
+    from anthropic.types import Message, Usage
+    from anthropic.types.text_block import TextBlock
+
+    return Message(
+        id="msg_test_000",
+        type="message",
+        role="assistant",
+        content=[TextBlock(type="text", text=text)],
+        model="test-model",
+        stop_reason="end_turn",
+        usage=Usage(input_tokens=in_tok, output_tokens=out_tok),
+    )
+
+
+def test_v030_provider_default_is_openai_compatible():
+    """``LLMConfig()`` default is openai-compatible — backward compat."""
+    from keynote_recap.config import LLMConfig
+
+    assert LLMConfig().provider == "openai-compatible"
+
+
+def test_v030_anthropic_backend_routes_via_messages_api(monkeypatch):
+    """provider=anthropic-native → backend is ``_AnthropicBackend``, not OpenAI."""
+    from keynote_recap.llm_client import LLMClient, _AnthropicBackend, _OpenAIBackend
+    from keynote_recap.config import LLMConfig
+
+    monkeypatch.setenv("FAKE_KEY", "x" * 40)
+
+    cfg = LLMConfig(
+        provider="anthropic-native",
+        base_url="https://test.example.com",
+        api_key_env="FAKE_KEY",
+    )
+    client = LLMClient(cfg)
+    assert isinstance(client._backend, _AnthropicBackend)
+    assert not isinstance(client._backend, _OpenAIBackend)
+
+
+def test_v030_openai_provider_still_works_unchanged(monkeypatch):
+    """Regression: provider=openai-compatible goes through ``_OpenAIBackend``."""
+    from keynote_recap.llm_client import LLMClient, _OpenAIBackend
+    from keynote_recap.config import LLMConfig
+
+    monkeypatch.setenv("OPENAI_API_KEY", "x" * 40)
+
+    cfg = LLMConfig(
+        provider="openai-compatible",
+        base_url="https://test.example.com/v1",
+        api_key_env="OPENAI_API_KEY",
+    )
+    client = LLMClient(cfg)
+    assert isinstance(client._backend, _OpenAIBackend)
+
+
+def test_v030_anthropic_chat_basic_text(monkeypatch):
+    """Plain text chat returns (text, input_tokens, output_tokens)."""
+    from keynote_recap.llm_client import LLMClient
+    from keynote_recap.config import LLMConfig
+
+    monkeypatch.setenv("FAKE_KEY", "x" * 40)
+
+    cfg = LLMConfig(
+        provider="anthropic-native",
+        base_url="https://test.example.com",
+        api_key_env="FAKE_KEY",
+    )
+    client = LLMClient(cfg)
+    client._backend.client.messages.create = lambda **kw: _make_anthropic_message(
+        "Hello world", in_tok=15, out_tok=7
+    )
+
+    text, in_tok, out_tok = client.chat(model="test", user="hi")
+    assert text == "Hello world"
+    assert in_tok == 15
+    assert out_tok == 7
+
+
+def test_v030_anthropic_chat_with_images_payload(monkeypatch, tmp_path):
+    """Vision call sends Anthropic content-block format (image + text)."""
+    from keynote_recap.llm_client import LLMClient
+    from keynote_recap.config import LLMConfig
+
+    monkeypatch.setenv("FAKE_KEY", "x" * 40)
+
+    cfg = LLMConfig(
+        provider="anthropic-native",
+        base_url="https://test.example.com",
+        api_key_env="FAKE_KEY",
+    )
+    client = LLMClient(cfg)
+
+    captured_kwargs = {}
+
+    def capturing_create(**kw):
+        captured_kwargs.update(kw)
+        return _make_anthropic_message("image description")
+
+    client._backend.client.messages.create = capturing_create
+
+    # Create a tiny test image (1x1 jpeg)
+    img = tmp_path / "test.jpg"
+    img.write_bytes(
+        b"\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x01\x00H\x00H\x00\x00"
+        b"\xff\xdb\x00C\x00\x08\x06\x06\x07\x06\x05\x08\x07\x07\x07\t\t"
+        b"\x08\n\x0c\x14\r\x0c\x0b\x0b\x0c\x19\x12\x13\x0f\x14\x1d\x1a"
+        b"\x1f\x1e\x1d\x1a\x1c\x1c $.' \",#\x1c\x1c(7),01444\x1f'9=82<.342"
+        b"\xff\xc0\x00\x0b\x08\x00\x01\x00\x01\x01\x01\x11\x00\xff\xc4\x00"
+        b"\x1f\x00\x00\x01\x05\x01\x01\x01\x01\x01\x01\x00\x00\x00\x00\x00"
+        b"\x00\x00\x00\x01\x02\x03\x04\x05\x06\x07\x08\t\n\x0b\xff\xc4\x00"
+        b"\xb5\x10\x00\x02\x01\x03\x03\x02\x04\x03\x05\x05\x04\x04\x00\x00"
+        b"\x00\x00\x01\x02\x03\x00\x04\x11\x05\x12!1A\x06\x13Qa\x07\"q\x142"
+        b"\x81\x91\xa2\x08\xb1\xc1#2\x15R\xd1\xf0$3brB\xc2\x16\x17\x18\x19"
+        b"\x1a%&'()*456789:CDEFGHIJSTUVWXYZcdefghijstuvwxyz"
+        b"\xff\xd9"
+    )
+
+    text, in_tok, out_tok = client.chat_with_images(
+        model="test", user_text="describe the image", image_paths=[img]
+    )
+
+    # Check the call used the correct Anthropic content-block format
+    msgs = captured_kwargs.get("messages", [])
+    assert len(msgs) == 1
+    content = msgs[0].get("content", [])
+    assert len(content) == 2
+
+    # First block is image
+    assert content[0]["type"] == "image"
+    assert content[0]["source"]["type"] == "base64"
+    assert content[0]["source"]["media_type"] == "image/jpeg"
+    assert content[0]["source"]["data"] != ""
+
+    # Second block is text
+    assert content[1]["type"] == "text"
+    assert content[1]["text"] == "describe the image"
+
+    # Return values
+    assert text == "image description"
+    assert in_tok == 10
+    assert out_tok == 5
+
+
+def test_v030_anthropic_json_mode_appends_system_directive(monkeypatch):
+    """json_mode=True appends a JSON directive to the system prompt."""
+    from keynote_recap.llm_client import LLMClient
+    from keynote_recap.config import LLMConfig
+
+    monkeypatch.setenv("FAKE_KEY", "x" * 40)
+
+    cfg = LLMConfig(
+        provider="anthropic-native",
+        base_url="https://test.example.com",
+        api_key_env="FAKE_KEY",
+    )
+    client = LLMClient(cfg)
+
+    captured_kwargs = {}
+
+    def capturing_create(**kw):
+        captured_kwargs.update(kw)
+        return _make_anthropic_message('{"ok": true}')
+
+    client._backend.client.messages.create = capturing_create
+
+    client.chat(model="test", user="respond with json", json_mode=True)
+
+    system_used = captured_kwargs.get("system", "")
+    assert "valid JSON" in system_used
+    assert "markdown fences" in system_used or "code blocks" in system_used
+
+
+def test_v030_anthropic_extracts_system_from_messages_list(monkeypatch):
+    """System role in messages list is lifted into top-level system parameter."""
+    from keynote_recap.llm_client import LLMClient
+    from keynote_recap.config import LLMConfig
+
+    monkeypatch.setenv("FAKE_KEY", "x" * 40)
+
+    cfg = LLMConfig(
+        provider="anthropic-native",
+        base_url="https://test.example.com",
+        api_key_env="FAKE_KEY",
+    )
+    client = LLMClient(cfg)
+
+    captured_kwargs = {}
+
+    def capturing_create(**kw):
+        captured_kwargs.update(kw)
+        return _make_anthropic_message("ok")
+
+    client._backend.client.messages.create = capturing_create
+
+    client.chat(
+        model="test",
+        messages=[
+            {"role": "system", "content": "You are a helpful assistant."},
+            {"role": "user", "content": "Hi"},
+        ],
+    )
+
+    # The system content should be in the top-level system parameter
+    system_used = captured_kwargs.get("system", "")
+    assert "helpful assistant" in system_used
+
+    # The messages list should NOT contain a system role entry
+    msgs = captured_kwargs.get("messages", [])
+    for m in msgs:
+        assert m.get("role") != "system", (
+            "System role should be lifted out of messages list"
+        )
+
+
+def test_v030_png_frames_use_image_png_media_type(monkeypatch, tmp_path):
+    """.png frames use media_type=image/png, .jpg uses image/jpeg."""
+    from keynote_recap.llm_client import LLMClient
+    from keynote_recap.config import LLMConfig
+
+    monkeypatch.setenv("FAKE_KEY", "x" * 40)
+
+    cfg = LLMConfig(
+        provider="anthropic-native",
+        base_url="https://test.example.com",
+        api_key_env="FAKE_KEY",
+    )
+    client = LLMClient(cfg)
+
+    captured = {"content": None}
+
+    def capturing_create(**kw):
+        captured["content"] = kw.get("messages", [{}])[0].get("content", [])
+        return _make_anthropic_message("desc")
+
+    client._backend.client.messages.create = capturing_create
+
+    jpg_img = tmp_path / "frame.jpg"
+    jpg_img.write_bytes(b"\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01")
+
+    png_img = tmp_path / "frame.png"
+    png_img.write_bytes(b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x02\x00\x00\x00\x90wS\xde\x00\x00\x00\x0cIDATx\x9cc\xf8\x0f\x00\x00\x01\x01\x00\x05\x18\xd8N\x00\x00\x00\x00IEND\xaeB`\x82")
+
+    client.chat_with_images(
+        model="test",
+        user_text="describe",
+        image_paths=[jpg_img, png_img],
+    )
+
+    content = captured["content"]
+    assert content[0]["source"]["media_type"] == "image/jpeg"
+    assert content[1]["source"]["media_type"] == "image/png"

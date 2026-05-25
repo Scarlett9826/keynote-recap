@@ -70,7 +70,7 @@ Run these in order. Do not skip steps.
 Before you start, confirm:
 
 - ✅ You can run shell commands and see their stdout/stderr (not a sandboxed assistant without exec).
-- ✅ The user has set `OPENAI_API_KEY` (or equivalent) and `KEYNOTE_RECAP_MODEL` to a verified multimodal model. See `README.md` §"模型选择" for the verified list. If they have not, surface that to the user — do not pick a model yourself.
+- ✅ The user has set the API key env var (read `~/.config/keynote-recap/config.yaml` → `llm.api_key_env`; the same env var works for both `openai-compatible` and `anthropic-native` providers) and `KEYNOTE_RECAP_MODEL` to a verified multimodal model. See `README.md` §"模型选择" for the verified list. If they have not, surface that to the user — do not pick a model yourself.
 - ✅ The video URL works in the user's browser. If `yt-dlp` later cannot fetch, that is a `--cookies-from-browser` / `--transcript-file` problem, not your problem to solve manually.
 
 ```bash

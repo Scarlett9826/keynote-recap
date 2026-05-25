@@ -383,6 +383,8 @@ def doctor(config: Path | None, llm: str | None, llm_all: str | None) -> None:
     console.print(f"[bold cyan]keynote-recap doctor v{__version__}[/]")
     console.print()
     console.print("[bold]Resolved per-stage models:[/]")
+    console.print(f"  provider: [green]{cfg.llm.provider}[/]")
+    console.print(f"  base_url: [dim]{cfg.llm.base_url}[/]")
     console.print(f"  extract:  [cyan]{cfg.llm.models.extract}[/]   [dim](stage 3, needs vision)[/]")
     console.print(f"  research: [cyan]{cfg.llm.models.research}[/]   [dim](stage 4)[/]")
     console.print(f"  draft:    [cyan]{cfg.llm.models.draft}[/]      [dim](stage 5, main writer)[/]")

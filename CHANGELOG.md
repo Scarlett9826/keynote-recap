@@ -4,6 +4,61 @@ All notable changes to **keynote-recap** are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] — Anthropic-native provider support (2026-05-25)
+
+### Added
+
+- **Native Anthropic Messages API support.** `LLMConfig.provider` is now
+  honored at the client level; setting `provider: anthropic-native`
+  routes all stages through the `anthropic` SDK and the `/messages`
+  endpoint instead of OpenAI's `/chat/completions`. This unblocks users
+  whose corporate LLM gateway exposes Claude via the native Anthropic
+  protocol (e.g. `your-vendor/claude-sonnet-4-6` model IDs reachable only
+  via `/anthropic/v1/messages`). Vision payloads are converted to
+  Anthropic's content-block format
+  (`{type:"image", source:{type:"base64", media_type, data}}`).
+
+- **Anthropic JSON-mode workaround.** Anthropic Messages has no
+  ``response_format`` parameter. When the caller passes
+  ``json_mode=True``, the backend appends a strict-JSON directive to
+  the system prompt; the existing ``LLMClient.parse_json`` already
+  strips markdown fences, so end-to-end behaviour matches OpenAI
+  json_mode for the project's needs.
+
+### Changed
+
+- ``LLMClient`` is now a thin facade dispatching to ``_OpenAIBackend``
+  or ``_AnthropicBackend`` based on ``cfg.llm.provider``. Public API
+  (``chat`` / ``chat_with_images`` / ``parse_json`` signatures and
+  return shapes) is byte-identical to v0.2.5.1; no callers in
+  ``stages/*`` need changes.
+
+- ``keynote-recap doctor`` now prints the active provider and base_url
+  so config errors surface immediately.
+
+- ``anthropic`` dependency pinned to ``>=0.40`` (was ``>=0.30``).
+
+### Tests
+
+- 8 new ``test_v030_anthropic_*`` tests covering: provider routing,
+  default backward compat, text chat, vision payload format, json_mode
+  directive injection, system role lifting, OpenAI provider regression,
+  and PNG/JPEG media_type detection. All mocked — no token spend.
+
+- Total: 132 passing (was 124 in v0.2.5.1).
+
+### Acknowledged limitations
+
+- Stage 3 heuristic-scorer fallback path (when ALL vision batches fail)
+  has a pre-existing pydantic schema bug: ``SelectedFrame.source``
+  literal does not accept the value the fallback fills in. v0.3.0 does
+  NOT fix this; tracked for v0.3.1. With v0.3.0's anthropic provider
+  working correctly, the fallback path is reached much less frequently.
+
+- Anthropic prompt-caching tokens
+  (``cache_creation_input_tokens`` / ``cache_read_input_tokens`` in
+  usage) are not surfaced to cost_tracker. Tracked for v0.3.1.
+
 ## [0.2.5.1] — Hotfix: api_key check is advisory, not blocking (2026-05-25)
 
 ### Fixed

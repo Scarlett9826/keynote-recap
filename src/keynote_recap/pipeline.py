@@ -231,6 +231,7 @@ def run_pipeline(
     debug: bool = False,
     preflight_env_warnings: list[str] | None = None,
     preflight_model_warnings: list[str] | None = None,
+    transcript_override_path: str = "",
 ) -> State:
     """Run pipeline from start_stage to end_stage (inclusive)."""
     config.debug = debug
@@ -241,6 +242,10 @@ def run_pipeline(
         console.print(f"[dim]Resumed from {state_path} (last completed: stage {state.last_completed_stage})[/]\n")
     else:
         state = State.new(url=url, output_dir=output_dir)
+
+    # v0.2.4 (M9.2): user-supplied transcript path
+    if transcript_override_path:
+        state.transcript_override_path = transcript_override_path
 
     # Persist preflight warnings (M7) so the final report can surface them.
     if preflight_env_warnings:
@@ -261,10 +266,21 @@ def run_pipeline(
             state = runner(state, config)
         except Exception as e:
             console.print(f"[bold red]Stage {num} ({name}) failed:[/] {e}")
+            # v0.2.4 (M9.4): record this stage as skipped so frontmatter +
+            # integrity callout reflect reality.
+            if num not in state.stages_skipped:
+                state.stages_skipped.append(num)
+            # Use short stage label ("1" / "5.5") matching _fmt_stage in draft.py
+            stage_key = str(int(num)) if num == int(num) else str(num)
+            state.stages_skip_reasons[stage_key] = f"{type(e).__name__}: {e}"
             state.save()
             if debug:
                 raise
             return state
+
+        # v0.2.4 (M9.4): track which stages actually ran successfully.
+        if num not in state.stages_completed:
+            state.stages_completed.append(num)
 
         # ─── Runtime capability probes (M7) ───
         # Detect "model technically ran but produced suspiciously thin output"

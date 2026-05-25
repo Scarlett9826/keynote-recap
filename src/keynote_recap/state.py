@@ -152,6 +152,16 @@ class State(BaseModel):
     # or model not verified; up to AGENT_PARALLEL_VERIFIED_CAP otherwise).
     # Surfaced in stage banner and report responsibility section.
     stage_parallelism: dict[str, int] = Field(default_factory=dict)
+    # v0.2.4 (M9.4/M9.5): which stage numbers were skipped + why. Drives
+    # report.md frontmatter and the integrity-callout template selection.
+    # Stage numbers are floats matching last_completed_stage (e.g. 1.0, 4.0).
+    stages_skipped: list[float] = Field(default_factory=list)
+    stages_skip_reasons: dict[str, str] = Field(default_factory=dict)
+    stages_completed: list[float] = Field(default_factory=list)
+    # v0.2.4 (M9.2): user-supplied transcript path. The sanctioned escape
+    # hatch when yt-dlp can't fetch subtitles (Bilibili 412, region locks,
+    # private videos with manual transcript). Set via --transcript-file.
+    transcript_override_path: str = ""
 
     # ─── Stage 6: render ───
     report_html_path: str = ""

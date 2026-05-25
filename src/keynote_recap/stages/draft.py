@@ -73,7 +73,7 @@ def run(state: State, cfg: Config) -> State:
 
     # ─── Combine ───
     title = _extract_title(body) or state.video.title
-    final = _assemble_report(title, callout, body)
+    final = _assemble_report(title, callout, body, state, cfg)
 
     report_path = output_dir / "report.md"
     report_path.write_text(final)
@@ -325,8 +325,128 @@ def _strip_code_fence(text: str) -> str:
 # ──────────────────────────────────────────────────────────────────────────────
 # Assembly
 # ──────────────────────────────────────────────────────────────────────────────
-def _assemble_report(title: str, callout: str, body: str) -> str:
-    return f"# {title}\n\n{callout}\n\n---\n\n{body}\n"
+def _assemble_report(title: str, callout: str, body: str, state, cfg) -> str:
+    """Compose final report.md with v0.2.4 integrity layer.
+
+    Layout:
+        ---  ← YAML frontmatter (M9.5: provenance + sha)
+        ...
+        ---
+        # title
+        > integrity callout (M9.4: ✅ or ⚠️ depending on stages_skipped)
+        > ...
+
+        ---
+        body (LLM-written)
+
+    The frontmatter's ``content-sha256`` covers everything starting from
+    "# title" — the integrity callout is part of the signed body so a
+    later edit (e.g. agent removing the ⚠️ block to hide a half-run)
+    breaks sha verification.
+    """
+    from datetime import datetime
+
+    from .. import __version__
+    from ..frontmatter import attach_frontmatter
+
+    integrity = _build_integrity_callout(state, cfg)
+    body_text = f"# {title}\n\n{integrity}\n\n{callout}\n\n---\n\n{body}\n"
+
+    meta: dict = {
+        "keynote-recap-version": __version__,
+        "generated-at": datetime.now().astimezone().isoformat(timespec="seconds"),
+        "source-url": state.url,
+        "stages-completed": [_fmt_stage(s) for s in sorted(state.stages_completed)],
+        "stages-skipped": [_fmt_stage(s) for s in sorted(state.stages_skipped)],
+        "model-extract": state.models_used.get("extract", "unknown"),
+        "model-extract-tier": state.model_tiers.get("extract", "unknown"),
+        "model-draft": state.models_used.get("draft", "unknown"),
+        "model-draft-tier": state.model_tiers.get("draft", "unknown"),
+    }
+    return attach_frontmatter(meta, body_text)
+
+
+def _fmt_stage(s: float) -> str:
+    """Render stage number for frontmatter list (1.0 → '1', 5.5 → '5.5')."""
+    return str(int(s)) if s == int(s) else str(s)
+
+
+def _build_integrity_callout(state, cfg) -> str:
+    """M9.4: mandatory integrity callout. Always emitted, two templates.
+
+    Healthy:
+        > ✅ 本次 keynote-recap 完整运行
+        > - 全部 7 stage 完成
+        > - 模型：claude-opus-4 (verified multimodal)
+        > - 引用数：12，验证通过：12
+
+    Half-run:
+        > ⚠️ 本次 keynote-recap 部分运行
+        > - 跳过：stage 1（字幕，原因：...），stage 4（事实查证）
+        > - 完整：stage 2, 3, 5, 5.5
+        > - 模型：your-company/mimo-v2.5（不在 verified 列表）
+        > - 本报告无法验证以下方法论项：...
+
+    Agent compressing the report MUST confront this — keep it (exposes
+    half-run state in published doc) or delete it (breaks sha check).
+    """
+    skipped = sorted(state.stages_skipped)
+    extract_model = state.models_used.get("extract", "unknown")
+    extract_tier = state.model_tiers.get("extract", "unknown")
+    n_citations = len(state.verified_facts) if state.verified_facts else 0
+
+    is_healthy = (
+        not skipped
+        and extract_tier == "verified_multimodal"
+        and n_citations >= 8
+    )
+
+    if is_healthy:
+        lines = [
+            "> ✅ 本次 keynote-recap 完整运行",
+            "> ",
+            "> - 全部 7 stage 完成",
+            f"> - 模型：{extract_model}（verified multimodal）",
+            f"> - 引用数：{n_citations}，全部验证通过",
+        ]
+        return "\n".join(lines)
+
+    # Half-run template
+    completed = sorted(state.stages_completed)
+    skip_parts: list[str] = []
+    for s in skipped:
+        s_str = _fmt_stage(s)
+        reason = state.stages_skip_reasons.get(s_str, "未知原因")
+        skip_parts.append(f"stage {s_str}（{reason}）")
+    skipped_line = "、".join(skip_parts) if skip_parts else "无"
+    completed_line = "、".join(_fmt_stage(s) for s in completed) or "无"
+
+    # Methodology items that cannot be verified given what was skipped
+    cannot_verify: list[str] = []
+    if 1.0 in skipped:
+        cannot_verify.append("transcript 高频产品名 → 必须有图 对照")
+    if 4.0 in skipped:
+        cannot_verify.append("事实查证（引用 ≥ 8）")
+    if extract_tier != "verified_multimodal":
+        cannot_verify.append("视觉理解质量（当前模型不在 verified 列表）")
+
+    cannot_line = "、".join(cannot_verify) if cannot_verify else "（无）"
+
+    tier_zh = {
+        "verified_multimodal": "verified 多模态",
+        "known_text_only": "纯文本（不能看图）",
+        "unknown": "未验证",
+    }.get(extract_tier, extract_tier)
+
+    lines = [
+        "> ⚠️ 本次 keynote-recap 部分运行",
+        "> ",
+        f"> - 跳过：{skipped_line}",
+        f"> - 完整：stage {completed_line}",
+        f"> - 模型：{extract_model}（{tier_zh}）",
+        f"> - 本报告无法验证以下方法论项：{cannot_line}",
+    ]
+    return "\n".join(lines)
 
 
 def _extract_title(body: str) -> str:

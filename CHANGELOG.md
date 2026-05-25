@@ -4,6 +4,147 @@ All notable changes to **keynote-recap** are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.4] — M9 anti-shortcut layer (2026-05-25)
+
+**BREAKING.** Two flag removals + one new hard-fail mode. Motivated by
+~5 confessed sessions of agents (Feishu Hal etc.) calling keynote-recap
+and shortcutting the methodology: skipping stages, using text-only
+models, compressing the report into a few sentences and labeling it
+"keynote-recap official output". This release makes those shortcuts
+either impossible or loudly self-incriminating.
+
+### What changed
+
+**M9.1. `--force` removed (BREAKING).**
+
+Previously: text-only or unverified vision model → preflight warning,
+override with `--force`. Now: hard abort, no override. To use a custom
+model, submit a PR adding it to
+`src/keynote_recap/preflight.py::_VERIFIED_VISION_MODELS` after
+manually verifying it produces correct output on a small sample.
+
+Reason: agents repeatedly slapped `--force` on text-only models and
+shipped silent-garbage reports; users blamed the project.
+
+**M9.2. Stage 1 transcript failure → hard pipeline abort (BREAKING).**
+
+Previously: missing transcript → soft warning, pipeline continues to
+stage 2/3/5/5.5 with empty transcript. Now: `RuntimeError` with three
+copy-pasteable fix options:
+
+```
+yt-dlp --cookies-from-browser chrome <url> --write-auto-sub --skip-download
+```
+
+```
+keynote-recap recap <url> --transcript-file ./manual.srt
+```
+
+Or try a different mirror / region. Without transcript the methodology
+cannot run (stage 3 high-freq product check, stage 4 fact research,
+stage 5 grounding all need it).
+
+New flag: `--transcript-file <path>` accepts `.srt`, `.vtt`, or `.txt`
+as the sanctioned escape hatch.
+
+**M9.3. Stage 4 skipped or zero verified facts → red banner.**
+
+Reuses v0.2.2 tri-color banner. Trigger condition: stage 4 in
+`stages_skipped`, OR stage 4 ran but produced 0 verified facts. Red
+banner text: "本报告未经事实查证。所有数据均从演讲画面文字抠出，
+未经第三方信源核对…" Stage 1 skip → similar dedicated red banner.
+
+This is distinct from the existing red banner ("project quality gate
+failed"): there, methodology ran and the result failed checks; here,
+methodology didn't run at all.
+
+**M9.4. Mandatory integrity callout at top of report.md.**
+
+Always emitted, two templates:
+
+- Healthy: `> ✅ 本次 keynote-recap 完整运行` + stage list + model + citations
+- Half-run: `> ⚠️ 本次 keynote-recap 部分运行` + skipped stages + reasons
+  + can't-verify methodology items + model tier
+
+Cannot be disabled. Agent compressing the report must confront this
+callout. Keep it → exposes half-run state in published doc. Delete it
+→ breaks sha verification (M9.5/M9.6). Honesty tax.
+
+**M9.5. report.md auto-frontmatter.**
+
+`stages/draft.py` writes report.md with leading YAML frontmatter:
+
+```yaml
+---
+keynote-recap-version: 0.2.4
+generated-at: 2026-05-25T19:00:00+08:00
+content-sha256: <sha256 of body bytes after frontmatter>
+source-url: https://...
+stages-completed: [2, 3, 5, 5.5]
+stages-skipped: [1, 4]
+model-extract: your-company/mimo-v2.5
+model-extract-tier: known_text_only
+---
+```
+
+Hand-written narrow YAML parser (no third-party lib) — keeps schema
+locked, avoids agent injecting arbitrary keys. New module
+`src/keynote_recap/frontmatter.py`.
+
+**M9.6. New command `keynote-recap publish-html <report.md>`.**
+
+The only sanctioned path to re-render report.md → report.html.
+
+Logic:
+1. Read report.md, parse frontmatter
+2. Compute body sha256, compare to `content-sha256` in frontmatter
+3. Mismatch → abort with diagnostic ("report.md has been modified after
+   keynote-recap wrote it…")
+4. Match → render HTML
+
+Agents that "summarize" or "rewrite" report.md cannot use this command
+— sha mismatch will abort. Agents that hand-write HTML can — but their
+output won't carry the M9.7 stamp.
+
+**M9.7. HTML provenance stamp.**
+
+`<head>`:
+```html
+<meta name="generator" content="keynote-recap 0.2.4">
+<meta name="content-sha256" content="abc123def...">
+```
+
+Bottom-right floating element:
+```
+v0.2.4 · sha:abc123de · 模型:claude-opus-4
+```
+
+CSS positions it `bottom: 8px; right: 12px; opacity: 0.6` —
+visible-but-unobtrusive. Print stylesheet repositions it to inline
+flow so it survives print/PDF. Anyone receiving the HTML can verify
+provenance in 1 second.
+
+### Migration
+
+For most users (verified models, working subtitle download): no action,
+report.md just gains a YAML frontmatter at the top.
+
+For users on text-only models: add the model to `_VERIFIED_VISION_MODELS`
+via PR. No backdoor.
+
+For users on Bilibili / region-locked sources: pass `--transcript-file`
+with a manually-prepared `.srt`.
+
+### Tests
+
+110 tests passing (+14). New coverage: `--force` not in CLI args,
+preflight no longer accepts `force=` kwarg, frontmatter roundtrip,
+sha tamper detection, integrity callout templates (healthy/half-run),
+red banner triggers (stage 1 skipped, stage 4 skipped), HTML stamp
+present, publish-html sha gate, publish-html no-frontmatter rejection.
+
+---
+
 ## [0.2.3] — M8 methodology lock + agent parallel layer (2026-05-25)
 
 Two structural changes that protect output quality without expanding

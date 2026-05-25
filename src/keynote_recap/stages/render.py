@@ -175,6 +175,28 @@ tr:nth-child(even) { background: var(--table-stripe); }
 .responsibility li { margin: 2px 0; line-height: 1.5; }
 .responsibility table { font-size: 13px; }
 .responsibility code { font-size: 12px; }
+
+/* v0.2.4 (M9.7): provenance stamp — verifiable visual signature.
+   Position fixed bottom-right so downstream readers can identify a
+   keynote-recap-produced HTML at a glance. Subtle, non-distracting. */
+.recap-stamp {
+    position: fixed;
+    bottom: 8px;
+    right: 12px;
+    font-size: 10px;
+    color: var(--fg-muted);
+    background: var(--bg);
+    padding: 3px 8px;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    opacity: 0.6;
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+    pointer-events: none;
+    z-index: 1000;
+}
+@media print {
+    .recap-stamp { position: static; opacity: 1; margin-top: 24px; }
+}
 </style>
 """
 
@@ -190,50 +212,18 @@ def run(state: State, cfg: Config) -> State:
     md_path = Path(state.report_md_path)
     html_path = md_path.with_suffix(".html")
 
-    md_text = md_path.read_text()
-    base_dir = md_path.parent
-
-    # 1. embed images as base64
-    md_text = re.sub(
-        r"!\[([^\]]*)\]\(([^)]+)\)",
-        lambda m: _embed_image(m, base_dir),
-        md_text,
-    )
-
-    # 2. render markdown
-    html_body = markdown.markdown(
-        md_text,
-        extensions=["extra", "sane_lists", "tables", "md_in_html"],
-    )
-
     title = state.video.title if state.video else md_path.stem
-
-    # ─── Tri-color quality banner (M5 + M7) ───
-    # Red    = project quality gate failed (after retries)
-    # Yellow = environment / model capability concern (project ran fine but
-    #          output quality may be limited by user's model / env choice)
-    # No banner = healthy run
     banner_html = _build_banner(state)
-
-    # ─── Responsibility section (M7) ───
-    # Only when there's a banner: makes it explicit which deltas are
-    # project-design vs. user-environment / model-self-direction.
     responsibility_html = _build_responsibility_section(state) if banner_html else ""
 
-    html_full = f"""<!doctype html>
-<html lang="zh-CN">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>{title}</title>
-{CSS}
-</head>
-<body>
-{banner_html}{html_body}{responsibility_html}
-</body>
-</html>"""
+    _write_html(
+        md_path=md_path,
+        html_path=html_path,
+        title=title,
+        banner_html=banner_html,
+        responsibility_html=responsibility_html,
+    )
 
-    html_path.write_text(html_full)
     state.report_html_path = str(html_path)
     state.last_completed_stage = 6.0
     state.save()
@@ -242,6 +232,99 @@ def run(state: State, cfg: Config) -> State:
     console.print(f"  Wrote {html_path.name} ({size_str})")
     console.print("[green]✓ Stage 6 done[/]\n")
     return state
+
+
+def render_report_md_to_html(
+    md_path: Path,
+    html_path: Path,
+    frontmatter_meta: dict,
+) -> None:
+    """v0.2.4 (M9.6): re-render an already-signed report.md to HTML.
+
+    Used by ``keynote-recap publish-html``. Caller has already verified
+    the sha matches; we just render. We don't have access to the State
+    here (this can run on a fresh machine with only report.md), so we
+    skip the banner / responsibility section — those are run-time
+    concepts. The integrity callout in the body covers the same ground
+    visually.
+
+    The HTML stamp (M9.7) embeds version + sha so downstream can verify
+    provenance even without re-running this command.
+    """
+    title = md_path.stem
+    _write_html(
+        md_path=md_path,
+        html_path=html_path,
+        title=title,
+        banner_html="",
+        responsibility_html="",
+        frontmatter_meta=frontmatter_meta,
+    )
+
+
+def _write_html(
+    md_path: Path,
+    html_path: Path,
+    title: str,
+    banner_html: str,
+    responsibility_html: str,
+    frontmatter_meta: dict | None = None,
+) -> None:
+    """Shared HTML rendering core for both stage 6 and publish-html."""
+    from ..frontmatter import parse_frontmatter
+
+    md_text = md_path.read_text()
+    base_dir = md_path.parent
+
+    # v0.2.4: strip YAML frontmatter before rendering — it would otherwise
+    # show up as "—" + raw key:value lines at the top of the HTML.
+    meta, body = parse_frontmatter(md_text)
+    if frontmatter_meta is None:
+        frontmatter_meta = meta
+
+    # 1. embed images as base64
+    body = re.sub(
+        r"!\[([^\]]*)\]\(([^)]+)\)",
+        lambda m: _embed_image(m, base_dir),
+        body,
+    )
+
+    # 2. render markdown
+    html_body = markdown.markdown(
+        body,
+        extensions=["extra", "sane_lists", "tables", "md_in_html"],
+    )
+
+    # 3. v0.2.4 (M9.7): provenance stamp
+    version = frontmatter_meta.get("keynote-recap-version", "?")
+    full_sha = frontmatter_meta.get("content-sha256", "")
+    sha_short = full_sha[:8] if full_sha else "unsigned"
+    model = frontmatter_meta.get("model-extract", "?")
+    stamp_meta = (
+        f'<meta name="generator" content="keynote-recap {_escape(version)}">\n'
+        f'<meta name="content-sha256" content="{_escape(full_sha)}">\n'
+    )
+    stamp_html = (
+        f'<div class="recap-stamp">'
+        f'v{_escape(version)} · sha:{_escape(sha_short)} · 模型:{_escape(model)}'
+        f'</div>'
+    )
+
+    html_full = f"""<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+{stamp_meta}<title>{_escape(title)}</title>
+{CSS}
+</head>
+<body>
+{banner_html}{html_body}{responsibility_html}
+{stamp_html}
+</body>
+</html>"""
+
+    html_path.write_text(html_full)
 
 
 def _escape(s: str) -> str:
@@ -288,6 +371,24 @@ def _build_banner(state: State) -> str:
     env_warnings = list(getattr(state, "preflight_env_warnings", []) or [])
     model_warnings = list(getattr(state, "preflight_model_warnings", []) or [])
     runtime_warnings = list(getattr(state, "runtime_warnings", []) or [])
+
+    # v0.2.4 (M9.3): stage 4 skipped or zero verified facts → red banner.
+    # This is "project methodology partially executed", not a user-env
+    # warning, so it goes red not yellow.
+    #
+    # Trigger condition: stage 4 was either skipped (in stages_skipped) OR
+    # ran but produced zero verified facts (research_notes_path set but
+    # verified_facts empty — distinguishes "stage 4 ran, found nothing"
+    # from "stage 4 hasn't run yet" e.g. unit tests on synthetic state).
+    stages_skipped = list(getattr(state, "stages_skipped", []) or [])
+    stages_completed = list(getattr(state, "stages_completed", []) or [])
+    n_verified = len(getattr(state, "verified_facts", []) or [])
+    transcript_skipped = (1.0 in stages_skipped)
+    research_skipped = (
+        (4.0 in stages_skipped)
+        or (4.0 in stages_completed and n_verified == 0)
+    )
+
     has_yellow = bool(env_warnings or model_warnings or runtime_warnings)
 
     if quality_failed:
@@ -303,6 +404,35 @@ def _build_banner(state: State) -> str:
     建议：换一个更强的多模态模型（如 <code>gemini-2.5-pro</code> /
     <code>claude-opus-4</code>），或运行 <code>keynote-recap doctor</code>
     检查模型能力，再用 <code>--start-stage 5</code> 重跑 draft。
+  </p>
+</div>
+"""
+
+    # v0.2.4 (M9.3): stage 4 skipped / no verified facts → dedicated red banner.
+    # Distinct from quality-gate failure: there, stage 4 ran and the report
+    # failed quality. Here, stage 4 didn't run at all — the report contains
+    # NO third-party-verified information.
+    if research_skipped or transcript_skipped:
+        reasons: list[str] = []
+        if transcript_skipped:
+            reasons.append("Stage 1（字幕）未完成 — 无 transcript，stage 4 事实查证无法启动")
+        if research_skipped and not transcript_skipped:
+            reasons.append(
+                f"Stage 4（事实查证）未完成 — 验证事实数 {n_verified}"
+            )
+        items = "".join(f"<li>{_escape(r)}</li>" for r in reasons)
+        return f"""
+<div class="quality-banner quality-banner-red">
+  <strong>本报告未经事实查证</strong>
+  <p>所有“数据”均从演讲画面文字抠出，<b>未经第三方信源核对</b>，
+     可能存在 OCR 错误、演讲者口误未修正、营销话术未挑明。请勿
+     按"已查证"标准引用本报告。</p>
+  <ul>{items}</ul>
+  <p class="quality-banner-tip">
+    修复：用 <code>--transcript-file</code> 提供字幕，或用
+    <code>yt-dlp --cookies-from-browser chrome &lt;url&gt;
+    --write-auto-sub --skip-download</code> 重新拉字幕，再
+    <code>--start-stage 4</code> 跑事实查证。
   </p>
 </div>
 """

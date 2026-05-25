@@ -87,6 +87,17 @@ ban 词、必有核心判断、≥ 8 引用、≥ 8 表格、callout / 信源说
 - **并发参数项目锁**：用户没有 `--parallel` 这种 flag。理由是这是方法论决策（绑定已验证模型的 RPM 上限），不是用户偏好；只暴露选择会让用户用错伤产出。
 - **stage banner 多打一行 `agent: parallel 4` / `agent: sequential (...)`**，让用户实时看到项目替他做了什么决定；最终报告的「模型与责任边界」表格新增「Agent 并发」列。
 
+**v0.2.4 起，agent 偷懒在物理上不可能**（M9 anti-shortcut layer，BREAKING）：
+
+- **删除 `--force`**：text-only / 未验证视觉模型一律硬 abort，无后门。需要新模型 → 提 PR 加进 `preflight.py::_VERIFIED_VISION_MODELS`（手验产出无误后）。
+- **stage 1 字幕失败硬终止**：v0.2.3 之前是软警告继续跑，导致后面 stage 都用空 transcript 跑出半残报告；v0.2.4 直接 abort 并给修复提示（`yt-dlp --cookies-from-browser`、`--transcript-file ./manual.srt`、换源）。
+- **新选项 `--transcript-file`**：B 站 412 / 区域锁 / 私有视频的官方逃生通道；接 `.srt` `.vtt` `.txt`。
+- **stage 4 跳过 / 零验证事实 → 红 banner**："本报告未经事实查证"。区别于「项目质量门失败」红 banner——后者是方法论跑了但结果未达标，前者是方法论压根没跑。
+- **报告顶部强制「诚信声明」callout**：✅ 完整运行 / ⚠️ 部分运行两套模板，列出实际跑了/跳过哪些 stage、用了什么模型、本次无法验证的方法论项。删不掉——删了会破坏 sha 校验。
+- **report.md frontmatter（M9.5）**：自动写入 `keynote-recap-version` / `content-sha256` / `stages-completed/skipped` / `model-extract` / `model-extract-tier`。
+- **`keynote-recap publish-html <report.md>`（M9.6）**：唯一合法的 report.md → HTML 通道；先校验 frontmatter content-sha256 和正文实际 sha 是否一致，不一致直接 abort（"报告已被修改"）。agent 想"压缩后再发"过不了这一关。
+- **HTML 印章（M9.7）**：右下角浮动小字 `v0.2.4 · sha:abc123de · 模型:claude-opus-4` + `<meta>` 标签。下游收到 HTML 一眼能验明正身。
+
 ## 5 分钟上手
 
 ```bash

@@ -91,14 +91,19 @@ def main() -> None:
     help="Pause for human review at checkpoints (after stage 3, 4, 5.5).",
 )
 @click.option(
+    "--transcript-file",
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    default=None,
+    help="Path to a user-supplied transcript (.srt, .vtt, or .txt). "
+         "Use this when yt-dlp cannot fetch subtitles "
+         "(Bilibili 412, region locks, private videos). "
+         "v0.2.4: stage 1 hard-fails without transcript; this is the "
+         "sanctioned escape hatch.",
+)
+@click.option(
     "--debug",
     is_flag=True,
     help="Enable debug logging.",
-)
-@click.option(
-    "--force",
-    is_flag=True,
-    help="Skip preflight model-capability check and run anyway.",
 )
 def recap(
     url: str,
@@ -111,8 +116,8 @@ def recap(
     end_stage: str,
     keep_video: bool,
     checkpoint: bool,
+    transcript_file: Path | None,
     debug: bool,
-    force: bool,
 ) -> None:
     """Run full 7-stage pipeline on a video URL.
 
@@ -151,12 +156,14 @@ def recap(
 
     # Preflight env check (M7 / v0.2.2): catches missing ffmpeg, yt-dlp,
     # API keys, low disk *before* any time is spent downloading.
-    env_warnings = _preflight_env(cfg, output_dir, force=force)
+    env_warnings = _preflight_env(cfg, output_dir)
     if env_warnings is None:  # blocker
         sys.exit(2)
 
-    # Preflight: warn / abort if model is known text-only or unverified.
-    proceed, model_warnings = _preflight_models(cfg, force=force)
+    # Preflight: text-only / unknown vision model is a hard abort (v0.2.4
+    # M9.1: --force was removed; no backdoor). To use a custom model,
+    # add it to preflight._VERIFIED_VISION_MODELS via PR.
+    proceed, model_warnings = _preflight_models(cfg)
     if not proceed:
         sys.exit(2)
 
@@ -171,6 +178,7 @@ def recap(
             debug=debug,
             preflight_env_warnings=env_warnings,
             preflight_model_warnings=model_warnings,
+            transcript_override_path=str(transcript_file) if transcript_file else "",
         )
     except KeyboardInterrupt:
         console.print("\n[yellow]Interrupted by user.[/]")
@@ -185,15 +193,17 @@ def recap(
 # ──────────────────────────────────────────────────────────────────────────────
 # Preflight environment check (M7 / v0.2.2)
 # ──────────────────────────────────────────────────────────────────────────────
-def _preflight_env(cfg, output_dir: Path, force: bool = False) -> list[str] | None:
+def _preflight_env(cfg, output_dir: Path) -> list[str] | None:
     """Print env check summary; return list of warning strings, or None if blocker.
 
     Catches missing ffmpeg / yt-dlp / API keys / low disk space so the user
     knows immediately what's wrong rather than crashing 5 minutes in with an
     opaque traceback.
 
+    v0.2.4 (M9.1): blockers are hard-aborted; ``--force`` was removed.
+
     Returns:
-        None  if a blocker is hit and ``force`` is False (caller should sys.exit).
+        None  if a blocker is hit (caller should sys.exit).
         list  of warning summaries (may be empty) suitable for persistence into
               ``state.preflight_env_warnings``.
     """
@@ -212,7 +222,7 @@ def _preflight_env(cfg, output_dir: Path, force: bool = False) -> list[str] | No
             console.print(f"  [yellow]\u26a0[/] {c.what}: {c.detail}")
 
     blockers = [c for c in checks if (not c.ok) and c.severity == "blocker"]
-    if blockers and not force:
+    if blockers:
         console.print()
         console.print("[bold red]Aborted:[/] one or more required tools / settings "
                       "are missing. Fix and retry:")
@@ -223,14 +233,7 @@ def _preflight_env(cfg, output_dir: Path, force: bool = False) -> list[str] | No
                 for line in c.fix.splitlines():
                     console.print(f"    [cyan]{line}[/]")
         console.print()
-        console.print("[dim]Override with[/] [cyan]--force[/] [dim]if you really "
-                      "want to try anyway (the run will likely crash).[/]")
         return None
-
-    if blockers and force:
-        console.print()
-        console.print("[yellow]\u26a0 --force set; continuing despite missing tools.[/] "
-                      "Expect a hard crash on the affected stage.")
 
     console.print()
     return pe.warning_summaries(checks)
@@ -239,22 +242,24 @@ def _preflight_env(cfg, output_dir: Path, force: bool = False) -> list[str] | No
 # ──────────────────────────────────────────────────────────────────────────────
 # Preflight model-capability check
 # ──────────────────────────────────────────────────────────────────────────────
-def _preflight_models(cfg, force: bool = False) -> tuple[bool, list[str]]:
+def _preflight_models(cfg) -> tuple[bool, list[str]]:
     """Print a model-capability summary; return (proceed, warnings).
 
-    The two stages that require vision are ``extract`` (stage 3) and
-    ``verify`` (stage 5.5.2). For each:
+    v0.2.4 (M9.1): there is no ``--force`` backdoor anymore. If a vision
+    stage uses a known text-only or unverified model, the run aborts.
+    Reason: text-only models silently produce garbage reports, and users
+    blame keynote-recap. To use a custom model, add it to
+    ``preflight._VERIFIED_VISION_MODELS`` via PR.
 
-    - ``VERIFIED_MULTIMODAL``  → ✓ green, proceed silently
-    - ``KNOWN_TEXT_ONLY``       → ✗ red, abort unless ``--force``
-    - ``UNKNOWN``               → ⚠ yellow, abort unless ``--force``
-                                  (M7 / v0.2.2 — was soft-warn previously;
-                                  too many silent-quality-loss reports)
+    Vision stages = ``extract`` (stage 3) + ``verify`` (stage 5.5.2):
 
-    Returns:
-        (proceed, warnings) where ``warnings`` is a list of strings that
-        will be persisted into ``state.preflight_model_warnings`` so the
-        final report can surface them in the quality banner.
+    - ``VERIFIED_MULTIMODAL``  → ✓ green, proceed
+    - ``KNOWN_TEXT_ONLY``       → ✗ red, hard abort
+    - ``UNKNOWN``               → ⚠ yellow, hard abort
+
+    Returns ``(proceed, warnings)``. Warnings list stays in the API for
+    state persistence even though, post-v0.2.4, a non-empty warnings
+    list always means proceed=False.
     """
     from .preflight import ModelTier, VERIFIED_MODELS_DOC, check_model_capability
 
@@ -287,7 +292,7 @@ def _preflight_models(cfg, force: bool = False) -> tuple[bool, list[str]]:
 
     blocked = has_text_only or has_unknown
 
-    if blocked and not force:
+    if blocked:
         console.print()
         if has_text_only:
             console.print("[bold red]Aborted:[/] one or more vision stages use a "
@@ -298,26 +303,14 @@ def _preflight_models(cfg, force: bool = False) -> tuple[bool, list[str]]:
         console.print()
         console.print(VERIFIED_MODELS_DOC)
         console.print()
-        console.print("[dim]Override with[/] [cyan]--force[/] [dim]to run anyway. "
-                      "If the model lacks image support the prompt-level capability probe "
-                      "will abort the run with a clear error; if it has weak image support "
-                      "the run will complete but the report will carry a yellow quality "
-                      "banner so readers know not to blame the project for the output.[/]")
+        console.print(
+            "[dim]v0.2.4: --force was removed. To use a custom model, "
+            "submit a PR adding it to[/] "
+            "[cyan]src/keynote_recap/preflight.py::_VERIFIED_VISION_MODELS[/] "
+            "[dim]after manually verifying it produces correct output on a "
+            "small sample.[/]"
+        )
         return False, warnings
-
-    if blocked and force:
-        console.print()
-        if has_text_only:
-            console.print(
-                "[yellow]\u26a0 --force set; continuing despite text-only model.[/] "
-                "Stage 3 / 5.5.2 will likely fail at the prompt-level capability probe."
-            )
-        else:
-            console.print(
-                "[yellow]\u26a0 --force set; continuing with unverified vision model.[/] "
-                "The final report will carry a quality banner indicating the model "
-                "is not on the verified list."
-            )
 
     console.print()
     return True, warnings
@@ -393,10 +386,10 @@ def doctor(config: Path | None, llm: str | None, llm_all: str | None) -> None:
 
     # Run env check against current working dir (doctor doesn't know an
     # output dir; this gives a representative disk-space reading).
-    env_warnings = _preflight_env(cfg, Path.cwd(), force=False)
+    env_warnings = _preflight_env(cfg, Path.cwd())
     env_ok = env_warnings is not None
 
-    proceed, _ = _preflight_models(cfg, force=False)
+    proceed, _ = _preflight_models(cfg)
 
     if env_ok and proceed:
         console.print("[green]All preflight checks passed.[/]")
@@ -440,6 +433,86 @@ def stage(stage_name: str, state: Path, debug: bool) -> None:
 
     console.print(f"[bold cyan]Running stage:[/] {stage_name}")
     run_single_stage(stage_name, state=s, config=cfg, debug=debug)
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# `publish-html` — re-render report.md → report.html with sha verification
+# ──────────────────────────────────────────────────────────────────────────────
+@main.command("publish-html")
+@click.argument("report_md", type=click.Path(exists=True, dir_okay=False, path_type=Path))
+@click.option(
+    "--output", "-o",
+    type=click.Path(dir_okay=False, path_type=Path),
+    default=None,
+    help="Output HTML path (default: <report_md>.html alongside input).",
+)
+def publish_html(report_md: Path, output: Path | None) -> None:
+    """Re-render a keynote-recap report.md → report.html.
+
+    Verifies the report.md frontmatter content-sha256 matches its body
+    before rendering. Refuses to render if the body has been edited
+    after keynote-recap wrote it.
+
+    This is the only sanctioned path to produce a fresh HTML from
+    report.md. Agents that "summarize" or "rewrite" report.md cannot
+    use this command — sha mismatch will abort.
+
+    The rendered HTML carries a stamp (meta tag + bottom-right marker)
+    so downstream consumers can verify provenance at a glance.
+    """
+    from .frontmatter import verify_frontmatter
+
+    text = report_md.read_text()
+    ok, msg, meta = verify_frontmatter(text)
+
+    console.print(f"[bold]publish-html[/] {report_md}")
+    if not ok:
+        console.print(f"  [red]\u2717 verification failed:[/] {msg}")
+        console.print()
+        if msg == "no frontmatter":
+            console.print(
+                "  This report.md has no keynote-recap frontmatter. It was "
+                "either produced by a pre-v0.2.4 build or written by hand."
+            )
+            console.print(
+                "  [dim]Re-run keynote-recap to produce a properly-signed "
+                "report.md, or accept that this file is not an official "
+                "keynote-recap output.[/]"
+            )
+        elif msg == "no content-sha256 in frontmatter":
+            console.print(
+                "  Frontmatter is present but missing the content-sha256 field. "
+                "This file was likely written by hand or with an old version."
+            )
+        else:
+            console.print(
+                "  [bold]The report body has been modified after keynote-recap wrote it.[/]"
+            )
+            console.print(
+                "  This is the M9.6 sha-verification gate. It exists to stop "
+                "agents from publishing 'compressed' or 'reworded' versions "
+                "of the original report and labeling them as keynote-recap "
+                "output."
+            )
+            console.print()
+            console.print("  [bold]To proceed, choose one:[/]")
+            console.print("    1. Re-run keynote-recap to regenerate a clean report.md")
+            console.print("    2. Manually re-compute the sha and write it back to "
+                          "frontmatter (NOT recommended — defeats the purpose)")
+        sys.exit(2)
+
+    console.print(f"  [green]\u2713[/] sha verified ({meta.get('content-sha256', '')[:12]}…)")
+    console.print(f"  [dim]generated by keynote-recap {meta.get('keynote-recap-version', '?')}[/]")
+
+    out_path = output or report_md.with_suffix(".html")
+
+    # Use the existing render pipeline. We need a State with report_md_path.
+    # Easiest: reconstruct minimal state from frontmatter + invoke
+    # stages.render._render_html(text, out_path, state).
+    from .stages.render import render_report_md_to_html
+
+    render_report_md_to_html(report_md, out_path, meta)
+    console.print(f"  [green]\u2713 wrote[/] {out_path}")
 
 
 if __name__ == "__main__":

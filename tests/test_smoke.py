@@ -991,8 +991,8 @@ def test_runtime_probe_research_no_verified():
     assert _probe_research_output(s) is None
 
 
-def test_preflight_models_unknown_blocks_without_force():
-    """M7 upgrade: unverified vision model now blocks (was warn-only in v0.2.1)."""
+def test_preflight_models_unknown_blocks():
+    """v0.2.4 (M9.1): unverified vision model is a hard abort, no force backdoor."""
     from keynote_recap.cli import _preflight_models
     from keynote_recap.config import load_config
 
@@ -1000,24 +1000,22 @@ def test_preflight_models_unknown_blocks_without_force():
     cfg.llm.models.extract = "totally-unknown-vision-model-xyz"
     cfg.llm.models.verify = "totally-unknown-vision-model-xyz"
 
-    proceed, warnings = _preflight_models(cfg, force=False)
+    proceed, warnings = _preflight_models(cfg)
     assert proceed is False
     assert len(warnings) >= 2  # both extract and verify warned
     assert any("totally-unknown" in w for w in warnings)
 
 
-def test_preflight_models_force_allows_unknown():
-    """--force lets unverified model proceed (warnings still recorded)."""
+def test_v024_preflight_models_no_force_kwarg():
+    """v0.2.4 (M9.1): _preflight_models no longer accepts a force= kwarg."""
+    import inspect
+
     from keynote_recap.cli import _preflight_models
-    from keynote_recap.config import load_config
 
-    cfg = load_config()
-    cfg.llm.models.extract = "totally-unknown-vision-model-xyz"
-    cfg.llm.models.verify = "totally-unknown-vision-model-xyz"
-
-    proceed, warnings = _preflight_models(cfg, force=True)
-    assert proceed is True
-    assert len(warnings) >= 2  # still surface them for the report banner
+    sig = inspect.signature(_preflight_models)
+    assert "force" not in sig.parameters, (
+        "v0.2.4 removed --force; _preflight_models must not accept it either"
+    )
 
 
 def test_draft_user_prompt_warns_against_placeholder_names():
@@ -1620,3 +1618,295 @@ def test_v023_yaml_template_does_not_emit_locked_keys():
         assert "tier" in body  # draft.tier survives
     finally:
         path.unlink(missing_ok=True)
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# v0.2.4: M9 anti-shortcut layer
+# ──────────────────────────────────────────────────────────────────────────────
+def test_v024_force_flag_removed_from_recap_command():
+    """v0.2.4 (M9.1): --force is no longer a flag on `keynote-recap recap`."""
+    from click.testing import CliRunner
+    from keynote_recap.cli import main
+
+    runner = CliRunner()
+    result = runner.invoke(main, ["recap", "--help"])
+    assert result.exit_code == 0
+    assert "--force" not in result.output, (
+        "v0.2.4 removed --force; help text must not mention it"
+    )
+
+
+def test_v024_frontmatter_roundtrip_basic():
+    """frontmatter render → parse must roundtrip simple types."""
+    from keynote_recap.frontmatter import parse_frontmatter, render_frontmatter
+
+    # Note: numeric strings round-trip as ints; that's fine for our schema
+    # since stages are "1", "5.5", etc. — the report consumer treats them
+    # as opaque labels.
+    meta = {
+        "keynote-recap-version": "0.2.4",
+        "stages-completed": ["1", "2", "3"],
+        "stages-skipped": [],
+        "model-extract": "claude-opus-4",
+    }
+    text = render_frontmatter(meta) + "body line 1\nbody line 2\n"
+    parsed, body = parse_frontmatter(text)
+    assert parsed["keynote-recap-version"] == "0.2.4"
+    assert parsed["stages-completed"] == [1, 2, 3]
+    assert parsed["stages-skipped"] == []
+    assert parsed["model-extract"] == "claude-opus-4"
+    assert body == "body line 1\nbody line 2\n"
+
+
+def test_v024_attach_frontmatter_computes_sha():
+    """attach_frontmatter must populate content-sha256 from body bytes."""
+    from keynote_recap.frontmatter import (
+        attach_frontmatter,
+        compute_body_sha256,
+        verify_frontmatter,
+    )
+
+    body = "# Title\n\n> ✅ healthy run\n\nsome content\n"
+    composed = attach_frontmatter(
+        {"keynote-recap-version": "0.2.4"},
+        body,
+    )
+    expected_sha = compute_body_sha256(body)
+    assert expected_sha in composed
+    ok, msg, meta = verify_frontmatter(composed)
+    assert ok is True
+    assert msg == "ok"
+    assert meta["content-sha256"] == expected_sha
+
+
+def test_v024_verify_frontmatter_detects_body_edit():
+    """Editing the body after frontmatter is written must fail verification."""
+    from keynote_recap.frontmatter import attach_frontmatter, verify_frontmatter
+
+    body = "# Title\n\noriginal content\n"
+    composed = attach_frontmatter(
+        {"keynote-recap-version": "0.2.4"},
+        body,
+    )
+    # Tamper: replace one word in body
+    tampered = composed.replace("original", "EDITED")
+    ok, msg, _ = verify_frontmatter(tampered)
+    assert ok is False
+    assert "sha mismatch" in msg
+
+
+def test_v024_verify_frontmatter_no_frontmatter():
+    """Plain markdown without frontmatter returns 'no frontmatter'."""
+    from keynote_recap.frontmatter import verify_frontmatter
+
+    ok, msg, meta = verify_frontmatter("# Just markdown\n\nno YAML here.\n")
+    assert ok is False
+    assert msg == "no frontmatter"
+    assert meta == {}
+
+
+def test_v024_state_has_stages_skipped_field():
+    """v0.2.4 (M9.4): state tracks stages_completed / skipped / reasons."""
+    from keynote_recap.state import State
+
+    s = State(url="https://x.example/v", output_dir="/tmp/x")
+    assert hasattr(s, "stages_completed")
+    assert hasattr(s, "stages_skipped")
+    assert hasattr(s, "stages_skip_reasons")
+    assert hasattr(s, "transcript_override_path")
+    assert s.stages_completed == []
+    assert s.stages_skipped == []
+    assert s.transcript_override_path == ""
+
+
+def test_v024_integrity_callout_healthy_template():
+    """M9.4: healthy-run callout has ✅ + 'verified multimodal'."""
+    from keynote_recap.stages.draft import _build_integrity_callout
+    from keynote_recap.state import State, VerifiedFact
+
+    s = State(url="https://x.example/v", output_dir="/tmp/x")
+    s.stages_completed = [1.0, 2.0, 3.0, 4.0, 5.0, 5.5, 6.0]
+    s.stages_skipped = []
+    s.models_used = {"extract": "claude-opus-4"}
+    s.model_tiers = {"extract": "verified_multimodal"}
+    s.verified_facts = [
+        VerifiedFact(
+            id=f"f{i}",
+            transcript_quote=f"q{i}",
+            verified_content=f"v{i}",
+            source_url="https://e.com",
+            source_name="example",
+        )
+        for i in range(10)
+    ]
+
+    callout = _build_integrity_callout(s, None)
+    assert "✅" in callout
+    assert "完整运行" in callout
+    assert "claude-opus-4" in callout
+    assert "verified multimodal" in callout
+
+
+def test_v024_integrity_callout_half_run_template():
+    """M9.4: half-run callout has ⚠️ + skipped stages + can't-verify list."""
+    from keynote_recap.stages.draft import _build_integrity_callout
+    from keynote_recap.state import State
+
+    s = State(url="https://x.example/v", output_dir="/tmp/x")
+    s.stages_completed = [2.0, 3.0, 5.0, 5.5]
+    s.stages_skipped = [1.0, 4.0]
+    s.stages_skip_reasons = {
+        "1": "bilibili 412",
+        "4": "depends on stage 1",
+    }
+    s.models_used = {"extract": "your-company/mimo-v2.5"}
+    s.model_tiers = {"extract": "known_text_only"}
+
+    callout = _build_integrity_callout(s, None)
+    assert "⚠️" in callout
+    assert "部分运行" in callout
+    assert "stage 1" in callout
+    assert "stage 4" in callout
+    assert "bilibili 412" in callout
+    assert "事实查证" in callout
+    assert "transcript" in callout or "字幕" in callout or "高频产品名" in callout
+    # text-only model should be flagged
+    assert "纯文本" in callout or "不能看图" in callout
+
+
+def test_v024_render_red_banner_when_stage_4_skipped():
+    """M9.3: skipping stage 4 → red 'no fact-check' banner in HTML."""
+    from keynote_recap.stages.render import _build_banner
+    from keynote_recap.state import State
+
+    s = State(url="https://x.example/v", output_dir="/tmp/x")
+    s.stages_completed = [2.0, 3.0, 5.0, 5.5]
+    s.stages_skipped = [4.0]
+    s.quality_passed = True
+    html = _build_banner(s)
+    assert 'quality-banner-red' in html
+    assert "未经事实查证" in html
+
+
+def test_v024_render_red_banner_when_transcript_skipped():
+    """M9.3: skipping stage 1 (no transcript) → red banner."""
+    from keynote_recap.stages.render import _build_banner
+    from keynote_recap.state import State
+
+    s = State(url="https://x.example/v", output_dir="/tmp/x")
+    s.stages_completed = [2.0, 3.0]
+    s.stages_skipped = [1.0]
+    s.quality_passed = True
+    html = _build_banner(s)
+    assert 'quality-banner-red' in html
+    assert "Stage 1" in html or "字幕" in html
+
+
+def test_v024_html_stamp_present():
+    """M9.7: HTML output contains version + sha stamp."""
+    from pathlib import Path
+    import tempfile
+
+    from keynote_recap.frontmatter import attach_frontmatter
+    from keynote_recap.stages.render import render_report_md_to_html
+
+    body = "# Title\n\nSome **content** here.\n"
+    composed = attach_frontmatter(
+        {
+            "keynote-recap-version": "0.2.4",
+            "model-extract": "claude-opus-4",
+            "model-extract-tier": "verified_multimodal",
+            "stages-completed": ["1", "2", "3", "4", "5", "5.5"],
+            "stages-skipped": [],
+        },
+        body,
+    )
+    with tempfile.TemporaryDirectory() as d:
+        md_path = Path(d) / "report.md"
+        md_path.write_text(composed)
+        html_path = Path(d) / "report.html"
+
+        from keynote_recap.frontmatter import parse_frontmatter
+        meta, _ = parse_frontmatter(composed)
+        render_report_md_to_html(md_path, html_path, meta)
+
+        html = html_path.read_text()
+        assert '<meta name="generator" content="keynote-recap 0.2.4">' in html
+        assert '<meta name="content-sha256"' in html
+        assert 'class="recap-stamp"' in html
+        assert 'v0.2.4' in html
+        # sha:<8-hex>
+        import re
+        assert re.search(r'sha:[0-9a-f]{8}', html)
+
+
+def test_v024_publish_html_aborts_on_sha_mismatch():
+    """publish-html refuses to render if body has been edited."""
+    from pathlib import Path
+    import tempfile
+
+    from click.testing import CliRunner
+    from keynote_recap.cli import main
+    from keynote_recap.frontmatter import attach_frontmatter
+
+    body = "# Title\n\nOriginal content.\n"
+    composed = attach_frontmatter(
+        {"keynote-recap-version": "0.2.4"},
+        body,
+    )
+    # Tamper: change a word in the body
+    tampered = composed.replace("Original", "EDITED")
+
+    with tempfile.TemporaryDirectory() as d:
+        md_path = Path(d) / "report.md"
+        md_path.write_text(tampered)
+
+        runner = CliRunner()
+        result = runner.invoke(main, ["publish-html", str(md_path)])
+        assert result.exit_code == 2
+        assert "verification failed" in result.output
+        assert "sha mismatch" in result.output
+
+
+def test_v024_publish_html_succeeds_on_clean_report():
+    """publish-html renders HTML when sha matches."""
+    from pathlib import Path
+    import tempfile
+
+    from click.testing import CliRunner
+    from keynote_recap.cli import main
+    from keynote_recap.frontmatter import attach_frontmatter
+
+    body = "# Title\n\n> ✅ healthy\n\nbody content\n"
+    composed = attach_frontmatter(
+        {"keynote-recap-version": "0.2.4"},
+        body,
+    )
+    with tempfile.TemporaryDirectory() as d:
+        md_path = Path(d) / "report.md"
+        md_path.write_text(composed)
+
+        runner = CliRunner()
+        result = runner.invoke(main, ["publish-html", str(md_path)])
+        assert result.exit_code == 0, result.output
+        html_path = md_path.with_suffix(".html")
+        assert html_path.exists()
+        assert "<title>" in html_path.read_text()
+
+
+def test_v024_publish_html_aborts_on_no_frontmatter():
+    """publish-html refuses pre-v0.2.4 reports without frontmatter."""
+    from pathlib import Path
+    import tempfile
+
+    from click.testing import CliRunner
+    from keynote_recap.cli import main
+
+    with tempfile.TemporaryDirectory() as d:
+        md_path = Path(d) / "report.md"
+        md_path.write_text("# Plain markdown\n\nno frontmatter here.\n")
+
+        runner = CliRunner()
+        result = runner.invoke(main, ["publish-html", str(md_path)])
+        assert result.exit_code == 2
+        assert "no frontmatter" in result.output

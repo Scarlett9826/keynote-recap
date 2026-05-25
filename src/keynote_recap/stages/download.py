@@ -50,15 +50,54 @@ def run(state: State, cfg: Config) -> State:
 
     # 3. subtitles
     subtitle_path, subtitle_lang, transcript = "", "", ""
-    if cfg.video.download_subtitles:
+
+    # v0.2.4 (M9.2): user-supplied transcript takes precedence and is the
+    # sanctioned escape hatch for sources that block subtitle download
+    # (Bilibili 412, region-locked, etc.).
+    transcript_override = getattr(state, "transcript_override_path", "") or ""
+    if transcript_override:
+        ov_path = Path(transcript_override)
+        if not ov_path.exists():
+            raise RuntimeError(
+                f"--transcript-file {transcript_override} does not exist."
+            )
+        if ov_path.suffix.lower() in (".srt", ".vtt"):
+            transcript = _extract_plaintext(ov_path)
+            subtitle_path = str(ov_path)
+            subtitle_lang = "user-supplied"
+        else:
+            transcript = ov_path.read_text(encoding="utf-8", errors="replace")
+            subtitle_lang = "user-supplied"
+        console.print(f"  Subtitle: {ov_path} (user-supplied)")
+    elif cfg.video.download_subtitles:
         subtitle_path, subtitle_lang = _download_subtitles(
             state.url, output_dir, cfg.video.languages
         )
         if subtitle_path:
             console.print(f"  Subtitle: {subtitle_path} ({subtitle_lang})")
             transcript = _extract_plaintext(Path(subtitle_path))
-        else:
-            console.print("  [yellow]No subtitles found — stage 1 fallback (LLM transcribe) needed[/]")
+
+    # v0.2.4 (M9.2): no transcript = hard fail. Without transcript, stage 3
+    # cannot do "high-frequency product name has image" cross-check, stage 4
+    # has no facts to research, and the methodology collapses. Previously
+    # this was a soft warning + continue, which produced silent half-quality
+    # reports.
+    if not transcript:
+        raise RuntimeError(
+            "No transcript available — stage 1 cannot complete.\n\n"
+            "Pipeline aborted. The methodology requires transcript text for:\n"
+            "  - stage 3 'high-freq product name → image' cross-check\n"
+            "  - stage 4 fact research\n"
+            "  - stage 5 outline & body grounding\n\n"
+            "Fix options:\n"
+            "  1. yt-dlp --cookies-from-browser chrome <url> "
+            "--write-auto-sub --skip-download\n"
+            "     (extract cookies from your browser; works for Bilibili 412 "
+            "and similar)\n"
+            "  2. Manually prepare a .srt or .txt transcript and pass it via\n"
+            "     keynote-recap recap <url> --transcript-file ./manual.srt\n"
+            "  3. Try a different mirror / region for the source URL"
+        )
 
     state.video = VideoMeta(
         url=state.url,

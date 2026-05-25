@@ -373,6 +373,64 @@ def check_image_section_fit(report_md: str) -> dict:
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+# 5.5.4b — deterministic bucket placement check (M6 D1)
+# ──────────────────────────────────────────────────────────────────────────────
+def check_bucket_placement(report_md: str, state: State) -> dict:
+    """Verify each image was placed in a chapter that matches its
+    `recommended_section` (set by stage 3 vision LLM).
+
+    With M6 D1, draft.py groups frames into per-chapter buckets BEFORE the
+    LLM writes. This check ensures the LLM honored those buckets in the
+    rendered report. This is a *strong* signal (deterministic): each frame
+    has a recommended_section field; the chapter where the image actually
+    landed is observable from the markdown structure; cross-bucket placement
+    is a hard error.
+
+    Returns dict with `cross_placements` listing (filename, intended_section,
+    actual_section) tuples and `all_pass`. Failure → triggers stage 5 retry
+    (NOT stage 3 — this is a writing problem, not a frame-selection one).
+    """
+    # Build filename → recommended_section lookup
+    rec_by_name: dict[str, str] = {
+        f.filename: (f.recommended_section or "") for f in state.selected_frames
+    }
+    if not rec_by_name:
+        return {"cross_placements": [], "all_pass": True}
+
+    # Walk the report, track current chapter, find images
+    lines = report_md.split("\n")
+    current_chapter = ""
+    cross: list[dict] = []
+    img_re = re.compile(r"!\[[^\]]*\]\(frames/([^)]+)\)")
+
+    for line in lines:
+        if re.match(r"^## [一二三四五六七八九十]+、", line):
+            current_chapter = line.strip().lstrip("# ").strip()
+            continue
+        m = img_re.search(line)
+        if not m:
+            continue
+        fname = m.group(1)
+        intended = rec_by_name.get(fname, "")
+        if not intended or not current_chapter:
+            continue
+        # Reuse fuzzy match from draft (import lazily to avoid cycle)
+        from .draft import _fuzzy_section_match
+        if not _fuzzy_section_match(intended, current_chapter):
+            cross.append({
+                "filename": fname,
+                "intended": intended,
+                "actual": current_chapter,
+            })
+
+    return {
+        "cross_placements": cross,
+        "total_images": sum(1 for line in lines for _ in img_re.findall(line)),
+        "all_pass": len(cross) == 0,
+    }
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 # 5.5.5 structure lint (M4 — addresses "格式没按要求产出" feedback)
 # ──────────────────────────────────────────────────────────────────────────────
 def check_structure(report_md: str) -> dict:
@@ -448,6 +506,111 @@ def check_structure(report_md: str) -> dict:
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+# 5.5.6 image source mix (M6 — addresses "图全是官方营销图，不是发布会现场" feedback)
+# ──────────────────────────────────────────────────────────────────────────────
+def check_image_source_mix(state: State, total_min: int = 25, live_ratio_min: float = 0.70) -> dict:
+    """Inspect state.selected_frames and ensure:
+
+      1. Total selected frames >= total_min (default 25 per strict tier)
+      2. Ratio of is_live=True frames >= live_ratio_min (default 0.70)
+
+    Both gates are HARD: failure triggers a stage 3 retry. Stage 5 retry
+    can't fix this — only re-running vision selection can.
+    """
+    frames = state.selected_frames
+    n_total = len(frames)
+    n_live = sum(1 for f in frames if f.is_live)
+    n_non_live = n_total - n_live
+    live_ratio = (n_live / n_total) if n_total else 0.0
+
+    issues: list[str] = []
+    if n_total < total_min:
+        issues.append(
+            f"frame count {n_total} < {total_min} required (strict tier)"
+        )
+    if n_total > 0 and live_ratio < live_ratio_min:
+        issues.append(
+            f"live ratio {live_ratio:.0%} < {live_ratio_min:.0%} required "
+            f"({n_live} live / {n_non_live} non-live)"
+        )
+
+    return {
+        "total": n_total,
+        "live": n_live,
+        "non_live": n_non_live,
+        "live_ratio": live_ratio,
+        "total_min": total_min,
+        "live_ratio_min": live_ratio_min,
+        "issues": issues,
+        "all_pass": not issues,
+    }
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 5.5.7 topic coverage (M6 D4 — addresses "某产品没有任何关联帧" failure mode)
+# ──────────────────────────────────────────────────────────────────────────────
+# Detects "topic was discussed extensively but no frame covers it" by checking
+# that every product/protocol name mentioned >= MIN_MENTIONS times in the
+# transcript also appears in at least one selected frame's caption,
+# recommended_section, or what_can_be_read field.
+#
+# Failure → stage 3 retry with a higher floor (vision LLM was too aggressive).
+
+TOPIC_COVERAGE_MIN_MENTIONS = 5      # transcript hits required to count as a "topic"
+TOPIC_COVERAGE_MAX_MISSING = 2       # tolerate this many uncovered topics before retry
+
+
+def check_topic_coverage(state: State) -> dict:
+    """Verify high-frequency products/topics are visually covered.
+
+    For every product/protocol name mentioned >= MIN_MENTIONS times in the
+    transcript, ensure at least one selected frame mentions it in caption,
+    recommended_section, or what_can_be_read.
+
+    Returns dict with `covered`, `missing`, `all_pass`. Failure (missing >
+    MAX_MISSING) → triggers stage 3 retry.
+    """
+    if state.video is None or not state.video.transcript:
+        return {"covered": [], "missing": [], "all_pass": True}
+
+    # Reuse the same _detect_product_names list used by stage 5 outline.
+    # We import lazily to avoid circular import.
+    from .draft import _detect_product_names
+
+    detected = _detect_product_names(state.video.transcript)
+    # Only enforce coverage for high-frequency topics
+    high_freq = [(name, count) for name, count in detected if count >= TOPIC_COVERAGE_MIN_MENTIONS]
+
+    # Build a single haystack from all selected frame text fields
+    haystack_parts: list[str] = []
+    for f in state.selected_frames:
+        haystack_parts.append(f.caption)
+        haystack_parts.append(f.recommended_section)
+        haystack_parts.append(f.what_can_be_read)
+    haystack = " ".join(haystack_parts).lower()
+
+    covered: list[str] = []
+    missing: list[str] = []
+    for name, count in high_freq:
+        # Patterns may contain regex syntax (e.g. r"Gemini\s+\d"); convert to a
+        # plain substring needle by stripping the regex special chars.
+        needle = re.sub(r"[\\\.\+\*\?\(\)\[\]\{\}\|\^\$]", "", name).strip().lower()
+        if not needle:
+            continue
+        if needle in haystack:
+            covered.append(f"{name} ({count}×)")
+        else:
+            missing.append(f"{name} ({count}× in transcript, 0 frames)")
+
+    return {
+        "covered": covered,
+        "missing": missing,
+        "all_pass": len(missing) <= TOPIC_COVERAGE_MAX_MISSING,
+        "max_missing_tolerance": TOPIC_COVERAGE_MAX_MISSING,
+    }
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 # Stage 5.5 entry
 # ──────────────────────────────────────────────────────────────────────────────
 def run(state: State, cfg: Config) -> State:
@@ -498,7 +661,7 @@ def run(state: State, cfg: Config) -> State:
     if not lint["level1"] and not lint["level2"]:
         console.print("  [5.5.3] lint: ✓ no violations")
 
-    # 5.5.4 image-section fit (M4)
+    # 5.5.4 image-section fit (M4 heuristic — kept as soft warning)
     fit = check_image_section_fit(report_md)
     if fit["all_pass"]:
         console.print("  [5.5.4] image-section fit: ✓ all images plausibly match section")
@@ -509,6 +672,23 @@ def run(state: State, cfg: Config) -> State:
             console.print(
                 f"          - {m['filename']} in 「{m['section_title'][:40]}」 "
                 f"(caption: {m['caption_excerpt'][:40]}...)"
+            )
+
+    # 5.5.4b — deterministic bucket placement (M6 D1, HARD GATE → stage 5 retry)
+    bucket = check_bucket_placement(report_md, state)
+    state.bucket_placement_passed = bucket["all_pass"]
+    if bucket["all_pass"]:
+        console.print(
+            f"  [5.5.4b] bucket placement: ✓ all "
+            f"{bucket.get('total_images', 0)} images in correct chapter bucket"
+        )
+    else:
+        n = len(bucket["cross_placements"])
+        console.print(f"  [5.5.4b] bucket placement: [red]✗ {n} images placed cross-bucket[/]")
+        for cp in bucket["cross_placements"][:5]:
+            console.print(
+                f"          - {cp['filename']} intended for 「{cp['intended'][:30]}」 "
+                f"but landed in 「{cp['actual'][:30]}」"
             )
 
     # 5.5.5 structure (M4)
@@ -536,6 +716,41 @@ def run(state: State, cfg: Config) -> State:
                 f"  [5.5.5] structure: [red]too few table rows "
                 f"({structure['table_count']} / need ≥ 8)[/]"
             )
+
+    # 5.5.6 — image source mix + total floor (HARD GATE → stage 3 retry)
+    src_mix = check_image_source_mix(state)
+    state.image_mix_passed = src_mix["all_pass"]
+    if src_mix["all_pass"]:
+        console.print(
+            f"  [5.5.6] image source mix: ✓ "
+            f"total={src_mix['total']} live={src_mix['live']} "
+            f"({src_mix['live_ratio']:.0%} ≥ {src_mix['live_ratio_min']:.0%})"
+        )
+    else:
+        console.print(
+            f"  [5.5.6] image source mix: [red]✗ "
+            f"total={src_mix['total']} live={src_mix['live']}/{src_mix['total']} "
+            f"({src_mix['live_ratio']:.0%})[/]"
+        )
+        for issue in src_mix["issues"]:
+            console.print(f"          - {issue}")
+
+    # 5.5.7 — topic coverage (HARD GATE → stage 3 retry)
+    tcov = check_topic_coverage(state)
+    state.topic_coverage_passed = tcov["all_pass"]
+    if tcov["all_pass"]:
+        console.print(
+            f"  [5.5.7] topic coverage: ✓ "
+            f"{len(tcov['covered'])} covered, {len(tcov['missing'])} missing "
+            f"(tolerance ≤ {tcov.get('max_missing_tolerance', 2)})"
+        )
+    else:
+        console.print(
+            f"  [5.5.7] topic coverage: [red]✗ "
+            f"{len(tcov['missing'])} high-freq topics have no associated frame[/]"
+        )
+        for m in tcov["missing"][:5]:
+            console.print(f"          - {m}")
 
     # 5.5.2 (sampled)
     client = LLMClient(cfg.llm)

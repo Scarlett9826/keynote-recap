@@ -70,14 +70,25 @@ def run(state: State, cfg: Config) -> State:
                     console.print(f"    [red]score failed: {p.name} ({e})[/]")
             progress.advance(task)
 
-    # 3. take top-N candidates
-    scored.sort(key=lambda x: x[1], reverse=True)
-    top_n = scored[: cfg.frame_filter.candidate_count]
-
-    # 4. parse subtitles for context
+    # 4. parse subtitles for context (parsed early so step 3 can use them for chunking)
     segments = []
     if state.video.subtitle_path:
         segments = parse_srt(Path(state.video.subtitle_path))
+
+    # 3. take top-N candidates with M6 D3 topic-chunk floor
+    # Why: pure top-N by score causes whole transcript chunks (e.g. a long
+    # speaker-led conversation segment) to be skipped because their PIL
+    # scores are uniformly low. To prevent topic dropouts, we split the
+    # video into N time chunks and reserve a per-chunk minimum even if the
+    # absolute score is below the global cutoff.
+    target_count = cfg.frame_filter.candidate_count
+    top_n = _topn_with_chunk_floor(
+        scored=scored,
+        duration_s=duration_s,
+        target_count=target_count,
+        chunk_count=12,                 # 12 chunks ≈ 5-min slices for a 60-min keynote
+        per_chunk_min=3,                # at least 3 frames per chunk
+    )
 
     # 5. build FrameCandidate list
     candidates: list[FrameCandidate] = []
@@ -134,6 +145,68 @@ def _ffmpeg_sample(video: Path, dest_dir: Path, interval: float, duration_s: flo
     r = subprocess.run(cmd, capture_output=True, text=True)
     if r.returncode != 0:
         raise RuntimeError(f"ffmpeg failed:\n{r.stderr}")
+
+
+def _topn_with_chunk_floor(
+    scored: list[tuple[Path, float, dict]],
+    duration_s: float,
+    target_count: int,
+    chunk_count: int = 12,
+    per_chunk_min: int = 3,
+) -> list[tuple[Path, float, dict]]:
+    """Return ~target_count frames with per-time-chunk floor guarantee.
+
+    The video is split into ``chunk_count`` equal time chunks. Each chunk
+    contributes at least ``per_chunk_min`` frames (its top-scored ones) to
+    the result; the remaining budget is filled by global top-N.
+
+    This guarantees no whole stretch of the video is skipped just because
+    its frames score low — preventing the F4 "漏了某产品" failure mode.
+    """
+    if not scored or chunk_count <= 0 or duration_s <= 0:
+        scored_sorted = sorted(scored, key=lambda x: x[1], reverse=True)
+        return scored_sorted[:target_count]
+
+    # Sort by score descending; we'll pull top-K from each chunk
+    scored_sorted = sorted(scored, key=lambda x: x[1], reverse=True)
+
+    # Build frame → chunk_idx mapping by parsing timestamp from filename
+    # (frame_NNNNN.jpg, where N is the global sequence number 1-indexed).
+    # We don't have interval here, so derive from the filename count.
+    n_frames = len(scored)
+    interval_est = duration_s / n_frames if n_frames > 0 else 1.0
+    chunk_size_s = duration_s / chunk_count
+
+    def _chunk_idx(path: Path) -> int:
+        try:
+            idx = int(path.stem.split("_")[1])
+        except (IndexError, ValueError):
+            return 0
+        ts = (idx - 1) * interval_est
+        ci = int(ts / chunk_size_s)
+        return max(0, min(chunk_count - 1, ci))
+
+    # First pass: per-chunk top-K
+    by_chunk: dict[int, list[tuple[Path, float, dict]]] = {i: [] for i in range(chunk_count)}
+    for entry in scored_sorted:
+        ci = _chunk_idx(entry[0])
+        if len(by_chunk[ci]) < per_chunk_min:
+            by_chunk[ci].append(entry)
+
+    floor_set = {entry[0]: entry for cs in by_chunk.values() for entry in cs}
+
+    # Second pass: fill remaining budget by global top-N (skipping already-included)
+    remaining_budget = max(0, target_count - len(floor_set))
+    fill: list[tuple[Path, float, dict]] = []
+    for entry in scored_sorted:
+        if entry[0] in floor_set:
+            continue
+        if len(fill) >= remaining_budget:
+            break
+        fill.append(entry)
+
+    combined = list(floor_set.values()) + fill
+    return combined
 
 
 def _frame_timestamp(path: Path, interval: float) -> float:

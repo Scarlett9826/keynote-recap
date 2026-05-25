@@ -48,6 +48,15 @@ class SelectedFrame(BaseModel):
     info_density: float                 # 0-1
     relevance: float                    # 0-1
     source: Literal["frame_extract", "official"] = "frame_extract"
+    # M6: is the frame from a live keynote scene (stage / speaker / PPT / live demo)
+    # or an inserted official render / marketing clip? Used by 5.5.6 source-mix
+    # check (live ratio must be >= 70% in strict tier).
+    is_live: bool = True
+    # M6: human-readable summary of what specific info the frame conveys with
+    # caption hidden — populated by stage 3 vision LLM as a self-discipline
+    # check. Frames where this is empty or generic ("好看 / 漂亮") indicate
+    # weak info density and should have been rejected.
+    what_can_be_read: str = ""
 
 
 class FactToVerify(BaseModel):
@@ -118,11 +127,15 @@ class State(BaseModel):
     structure_check_passed: bool = True   # default True so legacy state.json reload doesn't trigger retry
     placeholder_detected: bool = False    # 5.5.0: missing frame filenames in report.md
     lint_hard_failed: bool = False        # 5.5.3: any L1 forbidden phrase / emoji / transcription tell
+    bucket_placement_passed: bool = True  # 5.5.4b (M6 D1): images in correct chapter bucket
+    image_mix_passed: bool = True         # 5.5.6 (M6 D2): live ratio + total floor
+    topic_coverage_passed: bool = True    # 5.5.7 (M6 D4): high-freq topic coverage
     caption_verify_path: str = ""
     lint_report_path: str = ""
 
-    # ─── Quality gate retry tracking (M5) ───
+    # ─── Quality gate retry tracking (M5/M6) ───
     draft_retry_count: int = 0
+    extract_retry_count: int = 0          # M6: stage 3 retried once for image-mix/topic-coverage
     final_quality_warnings: list[str] = Field(default_factory=list)
     quality_passed: bool = True
 

@@ -192,18 +192,14 @@ def _build_user_for_body(state: State, outline: str) -> str:
         except Exception:
             pass
 
-    # Build a numbered, very explicit frame list emphasizing the EXACT filename.
-    # CRITICAL: keep `f.filename` verbatim — do NOT reconstruct from parts.
-    # Past bug: rebuilt filename from `f.filename.split('_')[1]` lost the .jpg
-    # suffix and confused the LLM into inventing semantic names like
-    # `frame_gt_01.jpg` instead of using `frame_00457.jpg`.
-    frames_block = "\n".join(
-        f"[{i+1}] filename: `{f.filename}` "
-        f"  ({format_duration(f.timestamp_s)} → {f.recommended_section})\n"
-        f"     引用语法: ![{f.caption[:60]}](frames/{f.filename})\n"
-        f"     caption: {f.caption}"
-        for i, f in enumerate(state.selected_frames)
-    )
+    # M6 D1 — deterministic placement.
+    # Bucket frames by recommended_section BEFORE the LLM sees them. The LLM
+    # is then told exactly which frames are available per chapter and may pick
+    # any subset (1+) within the bucket but MUST NOT cross-bucket. This turns
+    # placement from a generative "guess where this fits" task into a
+    # constrained "pick from this list" task.
+    section_buckets = _bucket_by_section(state.selected_frames, outline)
+    frames_block = _format_buckets_for_prompt(section_buckets)
 
     # All allowed filenames as a flat list for easy verification by LLM.
     allowed_filenames = ", ".join(f.filename for f in state.selected_frames)
@@ -225,7 +221,12 @@ def _build_user_for_body(state: State, outline: str) -> str:
 # Research Notes（联网补充事实）
 {research_notes}
 
-# 已筛选关键帧（{len(state.selected_frames)} 张）— caption 必须直接复用，不要改写
+# 已筛选关键帧（{len(state.selected_frames)} 张，按章节分桶）— caption 必须直接复用
+#
+# ⚠️ **配位硬约束**：每章只能用本章桶内列出的图，不能跨桶。
+# 例：「### 一、模型层」桶里有 5 张，你可以挑其中 3-5 张用在这章；
+# 但绝不能把「四、订阅价」桶里的图放进「一、模型层」章。
+# 这条规则由 stage 5.5 自动校验，违反会触发重写。
 {frames_block}
 
 # ⚠️ 允许使用的 filename 完整清单（不要使用此清单外的任何文件名）
@@ -238,8 +239,11 @@ def _build_user_for_body(state: State, outline: str) -> str:
 **关键约束**：
 1. **总图数 25-40 张**（少于 25 张视为质量不达标）—— 你拿到 {len(state.selected_frames)} 张候选，请用 25-35 张
 2. **filename 严禁编造**——只能用上方"已筛选关键帧"列表中给的真实文件名（形如 `frame_00457.jpg`）。绝对不能写 `frames/01-spark-intro.jpg` 之类的语义化文件名。
-3. 每个 ## 章节至少 1 张图（违反则会被打回）
-4. 重要章节 4-6 张图，次要章节 2-3 张图
+3. **每章只能用本章桶内的图**（D1 配位硬约束，违反会被打回）：
+   - 桶内有 N 张候选 → 本章必须挑 1 ~ N 张
+   - 桶为空 → 本章无图（不要从其他章桶强行借图）
+   - 不允许跨桶使用图
+4. 重要章节优先用满本桶 4-6 张，次要章节 2-3 张
 5. 至少 10 个 `> 📎 **补充信源**：[Source](URL)` 块（少于 8 个视为质量不达标）—— 每个主要章节至少 1 个 📎 块
 6. 使用 `frames/<filename>` 路径（不是 frames_raw/）
 7. 按发布优先级排章节，不按时间序
@@ -364,6 +368,126 @@ _PRODUCT_PATTERNS = [
     # Other
     "NotebookLM", "AI Studio", "Vertex", "Firebase",
 ]
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# M6 D1 — deterministic image-to-section bucket placement
+# ──────────────────────────────────────────────────────────────────────────────
+def _extract_outline_chapters(outline: str) -> list[str]:
+    """Pull L1 chapter titles from a stage-5.1 outline markdown.
+
+    Looks for lines like '## 一、模型层 — Gemini 3.5 ...' and returns the title
+    line stripped of the leading '## '. Skips '一点观察' and '信源说明' which
+    are reserved closing chapters that don't get image buckets.
+    """
+    chapters: list[str] = []
+    for line in outline.split("\n"):
+        line = line.strip()
+        if not line.startswith("## "):
+            continue
+        title = line[3:].strip()
+        # Skip reserved closing chapters (these are independent-judgement chapters,
+        # not chapters that should consume keynote frames)
+        if "信源说明" in title or "一点观察" in title or title.startswith("📌"):
+            continue
+        chapters.append(title)
+    return chapters
+
+
+def _bucket_by_section(
+    frames: list, outline: str
+) -> list[tuple[str, list]]:
+    """Bucket selected frames by their recommended_section vs. outline chapters.
+
+    Returns ordered list of (chapter_title, frames_in_bucket) tuples in the
+    order chapters appear in the outline. A trailing bucket
+    ('未分配（章节匹配失败，可挑选）', [...]) holds frames whose
+    recommended_section didn't match any chapter — these are still allowed
+    but flagged so the writer can place them where best fits.
+
+    Matching is fuzzy: a frame matches a chapter if the chapter title contains
+    any 2+ char substring of the frame's recommended_section, or vice versa.
+    """
+    chapters = _extract_outline_chapters(outline)
+    if not chapters:
+        # No structured outline → fall back to a single bucket
+        return [("（大纲未识别，全部帧自由使用）", list(frames))]
+
+    buckets: dict[str, list] = {ch: [] for ch in chapters}
+    unassigned: list = []
+
+    for f in frames:
+        rec = (f.recommended_section or "").strip()
+        if not rec:
+            unassigned.append(f)
+            continue
+        matched = False
+        # Try fuzzy substring match in either direction
+        for ch in chapters:
+            if _fuzzy_section_match(rec, ch):
+                buckets[ch].append(f)
+                matched = True
+                break
+        if not matched:
+            unassigned.append(f)
+
+    # Preserve outline order; drop empty buckets but keep the chapter listed
+    # in the prompt (so writer knows to source elsewhere or warn)
+    ordered: list[tuple[str, list]] = [(ch, buckets[ch]) for ch in chapters]
+    if unassigned:
+        ordered.append(("未分配（章节匹配失败，作者可灵活挑选）", unassigned))
+    return ordered
+
+
+def _fuzzy_section_match(rec: str, chapter: str) -> bool:
+    """True if recommended_section and chapter title share a 2+ char keyword.
+
+    Strips Chinese numerals/punctuation and compares 2+ char tokens.
+    """
+    def _tokens(s: str) -> set[str]:
+        clean = re.sub(r"[一二三四五六七八九十、：（）()\s—\-:]+", " ", s)
+        return {t.strip() for t in clean.split() if len(t.strip()) >= 2}
+
+    rec_tokens = _tokens(rec)
+    ch_tokens = _tokens(chapter)
+    # Direct token overlap
+    if rec_tokens & ch_tokens:
+        return True
+    # Substring overlap (catch "Gemini 模型层" vs "模型层：Gemini 3.5 谱系")
+    rec_blob = "".join(rec_tokens)
+    ch_blob = "".join(ch_tokens)
+    if not rec_blob or not ch_blob:
+        return False
+    # Look for any 2+ char common substring
+    for token in rec_tokens:
+        if len(token) >= 2 and token in ch_blob:
+            return True
+    for token in ch_tokens:
+        if len(token) >= 2 and token in rec_blob:
+            return True
+    return False
+
+
+def _format_buckets_for_prompt(
+    buckets: list[tuple[str, list]]
+) -> str:
+    """Render bucketed frames as a section-by-section authoritative list."""
+    lines: list[str] = []
+    for chapter, frames in buckets:
+        if not frames:
+            lines.append(f"### {chapter}")
+            lines.append("（本章无候选帧 — 不要在本章插入任何图。如内容需要，提请用户后续补图）")
+            lines.append("")
+            continue
+        lines.append(f"### {chapter}  （{len(frames)} 张候选，本章只能用这里的图）")
+        for i, f in enumerate(frames, 1):
+            lines.append(
+                f"  [{i}] `{f.filename}`  ({format_duration(f.timestamp_s)})\n"
+                f"      引用: ![{f.caption[:60]}](frames/{f.filename})\n"
+                f"      caption: {f.caption}"
+            )
+        lines.append("")
+    return "\n".join(lines)
 
 
 def _detect_product_names(transcript: str) -> list[tuple[str, int]]:

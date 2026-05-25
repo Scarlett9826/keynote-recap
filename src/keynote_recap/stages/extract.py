@@ -381,15 +381,26 @@ def _merge_batch_result(
         if fname not in name_to_candidate:
             continue
         c = name_to_candidate[fname]
+        # M6: is_live defaults to True for backward compat — old prompts
+        # didn't ask for this field. New prompts populate it explicitly.
+        is_live_raw = item.get("is_live", True)
+        is_live = bool(is_live_raw) if isinstance(is_live_raw, (bool, int)) else True
+        # If LLM marked is_live=false but caption doesn't already start with
+        # the disclaimer, prepend it so downstream readers see the warning.
+        caption = item.get("caption", "")
+        if not is_live and not caption.startswith("（插播官方渲染）"):
+            caption = f"（插播官方渲染）{caption}"
         selected_out.append(SelectedFrame(
             filename=fname,
             timestamp_s=c.timestamp_s,
             category=item.get("category", "other"),
-            caption=item.get("caption", ""),
+            caption=caption,
             recommended_section=item.get("recommended_section", ""),
             info_density=float(item.get("info_density", 0.7)),
             relevance=float(item.get("relevance_to_section", 0.7)),
             source="frame_extract",
+            is_live=is_live,
+            what_can_be_read=item.get("what_can_be_read", ""),
         ))
 
     for item in data.get("rejected_frames", []):

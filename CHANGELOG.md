@@ -4,6 +4,73 @@ All notable changes to **keynote-recap** are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.1] — M6 image pipeline overhaul (2026-05-25)
+
+Targeted fix for the failure mode where reports came out with too few images
+and/or all images being marketing renders instead of live keynote frames.
+This release rewrites the image pipeline as a four-stage data contract with
+hard gates at every step.
+
+### What changed
+
+- **D1 — deterministic image-to-section bucket placement**
+  ([draft.py](src/keynote_recap/stages/draft.py)): frames are bucketed by
+  `recommended_section` BEFORE the draft LLM sees them. Each chapter gets a
+  per-bucket frame list with the rule "use any subset within this bucket;
+  cross-bucket use is forbidden". Image placement becomes a constrained
+  pick-from-list problem instead of a generative guess.
+
+- **D2 — live vs. inserted-render classification**
+  ([prompts/03-extract-vision-filter.md](prompts/03-extract-vision-filter.md),
+  [extract.py](src/keynote_recap/stages/extract.py)): stage 3 vision LLM now
+  emits an `is_live` field per frame; non-live frames get `（插播官方渲染）`
+  prefix in caption. Verify gate 5.5.6 enforces `live ratio ≥ 70%` and
+  `total frames ≥ 25` — failure triggers stage 3 retry.
+
+- **D3 — per-chunk floor in stage 2 sampling**
+  ([segment.py](src/keynote_recap/stages/segment.py)): video is split into
+  12 time chunks; each chunk is guaranteed at least 3 candidate frames
+  regardless of absolute score. Prevents whole transcript stretches from
+  being dropped just because their PIL scores are uniformly low.
+
+- **D4 — topic coverage gate**
+  ([verify.py](src/keynote_recap/stages/verify.py)): stage 5.5.7 ensures
+  every product/protocol mentioned ≥5× in the transcript appears in at
+  least one selected frame's caption / recommended_section /
+  what_can_be_read. Failure triggers stage 3 retry.
+
+- **Pipeline retry policy split into two tiers**
+  ([pipeline.py](src/keynote_recap/pipeline.py)): extract-stage failures
+  (image mix / topic coverage) re-run from stage 3; draft-stage failures
+  (lint / placeholder / bucket placement / coverage / structure) re-run
+  only stage 5. Each tier retries at most once.
+
+- **5.5.4b deterministic bucket-placement check**
+  ([verify.py](src/keynote_recap/stages/verify.py)): hard gate verifying
+  the rendered report respected the per-chapter buckets from D1.
+
+### New verify gates
+
+| Gate | Failure handling |
+|---|---|
+| 5.5.4b bucket placement | hard error → stage 5 retry |
+| 5.5.6 image source mix  | hard error → stage 3 retry |
+| 5.5.7 topic coverage    | hard error → stage 3 retry |
+
+### Tests
+
+74 tests passing (was 58 pre-M6). 16 new tests cover D1/D2/D3/D4
+individually plus an end-to-end regression test for the user-reported
+"8 frames all marketing renders" failure that motivated this release.
+
+### Migration notes
+
+- `state.json` schema added 4 fields (`is_live` and `what_can_be_read` on
+  `SelectedFrame`; `bucket_placement_passed`, `image_mix_passed`,
+  `topic_coverage_passed`, `extract_retry_count` on `State`). Pydantic
+  defaults make old state files load without modification.
+- No CLI flag changes. The new gates run by default in strict tier.
+
 ## [0.2.0] — M5 hard quality gate + M4 small-model support (2026-05-22)
 
 Major release combining two work streams:

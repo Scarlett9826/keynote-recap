@@ -60,6 +60,14 @@
 
 ban 词、必有核心判断、≥ 8 引用、≥ 8 表格、callout / 信源说明 / 一点观察等约束**默认全开**。verify 检出任何硬错误 → 自动重跑 draft 1 次；二次仍失败 → report 顶部出现黄色 warning banner 列出未达项，但仍写出 HTML 让你可以人工修。如果你的模型在 strict 下频繁触发 banner，加 `--tier easy` 或 `--tier standard` 退一步。
 
+**v0.2.1 起，图—章节配位由代码强制保证**（M6 image pipeline overhaul）：
+
+- stage 2 按时间分 12 段保底采样，避免整段视频被剔（D3）
+- stage 3 vision LLM 必须标 `is_live`（现场 vs 插播渲染），并通过「信息量第一」自检三问（D2 prompt）
+- stage 5 草稿前先把候选帧按 `recommended_section` 分桶，**每章只能用本桶的图**（D1）
+- verify 5.5.6 硬门：总数 ≥ 25 且 live ≥ 70%；5.5.7 主题覆盖：transcript 高频产品名必须有图；任一不达 → 自动重跑 stage 3 一次（不只是 stage 5）
+- verify 5.5.4b 硬门：图必须落在 stage 3 给的 `recommended_section` 对应章节
+
 ## 5 分钟上手
 
 ```bash

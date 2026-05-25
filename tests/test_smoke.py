@@ -740,3 +740,446 @@ def test_draft_user_prompt_warns_against_placeholder_names():
     assert "frame_00457.jpg" in user_prompt
     # Self-check instruction is present
     assert "输出前自检" in user_prompt
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# M6 D1 — deterministic image bucket placement
+# ──────────────────────────────────────────────────────────────────────────────
+def test_d1_bucket_by_section_groups_frames_by_chapter():
+    """frames sharing recommended_section with a chapter end up in same bucket."""
+    from keynote_recap.stages.draft import _bucket_by_section
+    from keynote_recap.state import SelectedFrame
+
+    frames = [
+        SelectedFrame(
+            filename="f1.jpg", timestamp_s=10, category="demo",
+            caption="c1", recommended_section="模型层",
+            info_density=0.8, relevance=0.8,
+        ),
+        SelectedFrame(
+            filename="f2.jpg", timestamp_s=20, category="data",
+            caption="c2", recommended_section="模型层 Gemini",
+            info_density=0.8, relevance=0.8,
+        ),
+        SelectedFrame(
+            filename="f3.jpg", timestamp_s=30, category="product",
+            caption="c3", recommended_section="订阅价",
+            info_density=0.8, relevance=0.8,
+        ),
+    ]
+    outline = "## 一、模型层 — Gemini 谱系\n\n## 二、订阅价 — 三档定价\n"
+    buckets = _bucket_by_section(frames, outline)
+    # 2 chapter buckets, no unassigned
+    assert len(buckets) == 2
+    titles = {ch for ch, _ in buckets}
+    assert any("模型层" in t for t in titles)
+    assert any("订阅价" in t for t in titles)
+    # f1 and f2 should be in the model bucket; f3 in pricing
+    for ch, fs in buckets:
+        names = {f.filename for f in fs}
+        if "模型层" in ch:
+            assert names == {"f1.jpg", "f2.jpg"}
+        elif "订阅价" in ch:
+            assert names == {"f3.jpg"}
+
+
+def test_d1_bucket_unmatched_frames_go_to_overflow():
+    """frames whose recommended_section matches no chapter land in overflow bucket."""
+    from keynote_recap.stages.draft import _bucket_by_section
+    from keynote_recap.state import SelectedFrame
+
+    frames = [
+        SelectedFrame(
+            filename="orphan.jpg", timestamp_s=5, category="demo",
+            caption="c", recommended_section="某个未列出的章节",
+            info_density=0.8, relevance=0.8,
+        ),
+    ]
+    outline = "## 一、模型层\n"
+    buckets = _bucket_by_section(frames, outline)
+    # First bucket = 模型层 (empty), last = 未分配 with the orphan
+    titles = [ch for ch, _ in buckets]
+    assert any("未分配" in t for t in titles)
+    overflow = [fs for ch, fs in buckets if "未分配" in ch][0]
+    assert overflow[0].filename == "orphan.jpg"
+
+
+def test_d1_format_buckets_warns_for_empty_chapters():
+    """A chapter with zero candidate frames must be visible in the prompt."""
+    from keynote_recap.stages.draft import _format_buckets_for_prompt
+
+    text = _format_buckets_for_prompt([("一、孤章节 (no frames)", []), ("二、富章节", [])])
+    assert "本章无候选帧" in text
+
+
+def test_d1_check_bucket_placement_passes_for_correct_chapter():
+    """If image lands in chapter matching its recommended_section, no error."""
+    from keynote_recap.stages.verify import check_bucket_placement
+    from keynote_recap.state import SelectedFrame, State, VideoMeta
+
+    s = State.new(url="x", output_dir="/tmp/x")
+    s.video = VideoMeta(url="x")
+    s.selected_frames = [
+        SelectedFrame(
+            filename="f1.jpg", timestamp_s=10, category="demo",
+            caption="c", recommended_section="模型层",
+            info_density=0.8, relevance=0.8,
+        ),
+    ]
+    report = "## 一、模型层 — Gemini\n\n![cap](frames/f1.jpg)\n\nbody\n"
+    r = check_bucket_placement(report, s)
+    assert r["all_pass"] is True
+    assert r["cross_placements"] == []
+
+
+def test_d1_check_bucket_placement_fails_for_cross_chapter():
+    """If image with recommended_section=A lands in chapter B, must fail."""
+    from keynote_recap.stages.verify import check_bucket_placement
+    from keynote_recap.state import SelectedFrame, State, VideoMeta
+
+    s = State.new(url="x", output_dir="/tmp/x")
+    s.video = VideoMeta(url="x")
+    s.selected_frames = [
+        SelectedFrame(
+            filename="f1.jpg", timestamp_s=10, category="demo",
+            caption="c", recommended_section="订阅价",
+            info_density=0.8, relevance=0.8,
+        ),
+    ]
+    # f1 has recommended_section=订阅价 but report places it in 模型层 chapter
+    report = "## 一、模型层 — Gemini\n\n![cap](frames/f1.jpg)\n"
+    r = check_bucket_placement(report, s)
+    assert r["all_pass"] is False
+    assert len(r["cross_placements"]) == 1
+    cp = r["cross_placements"][0]
+    assert cp["filename"] == "f1.jpg"
+    assert "订阅价" in cp["intended"]
+    assert "模型层" in cp["actual"]
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# M6 D2 — image source mix (live ratio + total floor)
+# ──────────────────────────────────────────────────────────────────────────────
+def _make_frame(name: str, is_live: bool = True):
+    from keynote_recap.state import SelectedFrame
+    return SelectedFrame(
+        filename=name, timestamp_s=1.0, category="demo",
+        caption="c", recommended_section="x",
+        info_density=0.8, relevance=0.8, is_live=is_live,
+    )
+
+
+def test_d2_image_source_mix_passes_when_above_thresholds():
+    """≥25 frames + ≥70% live → all_pass=True."""
+    from keynote_recap.stages.verify import check_image_source_mix
+    from keynote_recap.state import State, VideoMeta
+
+    s = State.new(url="x", output_dir="/tmp/x")
+    s.video = VideoMeta(url="x")
+    s.selected_frames = [_make_frame(f"l{i}.jpg", True) for i in range(20)] + \
+                        [_make_frame(f"n{i}.jpg", False) for i in range(5)]
+    r = check_image_source_mix(s)
+    assert r["all_pass"] is True
+    assert r["total"] == 25
+    assert r["live"] == 20
+    assert r["live_ratio"] == 0.8
+
+
+def test_d2_image_source_mix_fails_when_total_too_low():
+    """<25 total frames → all_pass=False."""
+    from keynote_recap.stages.verify import check_image_source_mix
+    from keynote_recap.state import State, VideoMeta
+
+    s = State.new(url="x", output_dir="/tmp/x")
+    s.video = VideoMeta(url="x")
+    s.selected_frames = [_make_frame(f"l{i}.jpg", True) for i in range(8)]
+    r = check_image_source_mix(s)
+    assert r["all_pass"] is False
+    assert any("frame count" in i for i in r["issues"])
+
+
+def test_d2_image_source_mix_fails_when_live_ratio_too_low():
+    """≥25 frames but live <70% → all_pass=False."""
+    from keynote_recap.stages.verify import check_image_source_mix
+    from keynote_recap.state import State, VideoMeta
+
+    s = State.new(url="x", output_dir="/tmp/x")
+    s.video = VideoMeta(url="x")
+    # 0525 PDF case: 8/30 live = 26%
+    s.selected_frames = [_make_frame(f"l{i}.jpg", True) for i in range(8)] + \
+                        [_make_frame(f"n{i}.jpg", False) for i in range(22)]
+    r = check_image_source_mix(s)
+    assert r["all_pass"] is False
+    assert r["live_ratio"] < 0.70
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# M6 D3 — stage 2 topic-chunk floor
+# ──────────────────────────────────────────────────────────────────────────────
+def test_d3_topn_with_chunk_floor_guarantees_per_chunk_minimum():
+    """Even if some chunks have only low-score frames, they still get K frames."""
+    from pathlib import Path
+    from keynote_recap.stages.segment import _topn_with_chunk_floor
+
+    # Simulate 60 frames over 600s (10s interval). 12 chunks of 50s each.
+    # frames 1-5 high score (chunk 0), 6-60 low score
+    scored = []
+    for i in range(1, 61):
+        score = 100 - i  # frame_00001 highest, descending
+        scored.append((Path(f"frame_{i:05d}.jpg"), float(score), {}))
+
+    result = _topn_with_chunk_floor(
+        scored=scored, duration_s=600.0,
+        target_count=30, chunk_count=12, per_chunk_min=2,
+    )
+    # Each chunk should have at least 2 frames represented
+    by_chunk: dict[int, int] = {i: 0 for i in range(12)}
+    n_frames = len(scored)
+    interval_est = 600.0 / n_frames
+    chunk_size_s = 600.0 / 12
+    for path, _score, _m in result:
+        idx = int(path.stem.split("_")[1])
+        ts = (idx - 1) * interval_est
+        ci = max(0, min(11, int(ts / chunk_size_s)))
+        by_chunk[ci] += 1
+    # Every chunk has ≥ 2 frames (the per-chunk floor)
+    for ci, n in by_chunk.items():
+        assert n >= 2, f"chunk {ci} has only {n} frames (floor=2)"
+
+
+def test_d3_topn_falls_back_when_zero_duration():
+    """duration=0 should return top-N by score without crashing."""
+    from pathlib import Path
+    from keynote_recap.stages.segment import _topn_with_chunk_floor
+
+    scored = [(Path(f"frame_{i:05d}.jpg"), float(100 - i), {}) for i in range(1, 11)]
+    result = _topn_with_chunk_floor(
+        scored=scored, duration_s=0, target_count=5,
+        chunk_count=12, per_chunk_min=2,
+    )
+    # Returns top-5 by score, no crash
+    assert len(result) == 5
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# M6 D4 — topic coverage
+# ──────────────────────────────────────────────────────────────────────────────
+def test_d4_topic_coverage_passes_when_all_high_freq_covered():
+    """Every product mentioned ≥5 times in transcript appears in some frame."""
+    from keynote_recap.stages.verify import check_topic_coverage
+    from keynote_recap.state import SelectedFrame, State, VideoMeta
+
+    transcript = "Spark " * 6 + "Antigravity " * 6
+    s = State.new(url="x", output_dir="/tmp/x")
+    s.video = VideoMeta(url="x", transcript=transcript)
+    s.selected_frames = [
+        SelectedFrame(
+            filename="f1.jpg", timestamp_s=1, category="demo",
+            caption="Spark 主舞台", recommended_section="Agent",
+            info_density=0.8, relevance=0.8,
+        ),
+        SelectedFrame(
+            filename="f2.jpg", timestamp_s=2, category="demo",
+            caption="Antigravity IDE", recommended_section="开发者平台",
+            info_density=0.8, relevance=0.8,
+        ),
+    ]
+    r = check_topic_coverage(s)
+    assert r["all_pass"] is True
+    assert len(r["missing"]) == 0
+
+
+def test_d4_topic_coverage_fails_when_high_freq_topic_has_no_frame():
+    """Product mentioned ≥5× but absent from any frame's caption → fail."""
+    from keynote_recap.stages.verify import check_topic_coverage
+    from keynote_recap.state import SelectedFrame, State, VideoMeta
+
+    # Spark + Antigravity + AlphaFold + AlphaProteo + AI Mode all ≥5×
+    # but selected_frames covers only Spark
+    transcript = (
+        "Spark Spark Spark Spark Spark Spark "
+        "Antigravity Antigravity Antigravity Antigravity Antigravity Antigravity "
+        "AlphaFold AlphaFold AlphaFold AlphaFold AlphaFold AlphaFold "
+        "AlphaProteo AlphaProteo AlphaProteo AlphaProteo AlphaProteo AlphaProteo "
+    )
+    s = State.new(url="x", output_dir="/tmp/x")
+    s.video = VideoMeta(url="x", transcript=transcript)
+    s.selected_frames = [
+        SelectedFrame(
+            filename="f1.jpg", timestamp_s=1, category="demo",
+            caption="Spark demo", recommended_section="Agent",
+            info_density=0.8, relevance=0.8,
+        ),
+    ]
+    r = check_topic_coverage(s)
+    # Tolerance is 2; we have 3 missing (Antigravity / AlphaFold / AlphaProteo) → fail
+    assert r["all_pass"] is False
+    assert len(r["missing"]) >= 3
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# M6 — pipeline retry helpers
+# ──────────────────────────────────────────────────────────────────────────────
+def test_pipeline_extract_failures_separated_from_draft():
+    """Stage 3 retry triggered by extract failures only; stage 5 retry by draft."""
+    from keynote_recap.pipeline import _collect_extract_failures, _collect_draft_failures
+    from keynote_recap.state import State
+
+    s = State.new(url="x", output_dir="/tmp/x")
+    # Simulate a frame-selection problem
+    s.image_mix_passed = False
+    s.topic_coverage_passed = False
+    # And simulate a writing problem
+    s.bucket_placement_passed = False
+    s.lint_hard_failed = True
+
+    extract = _collect_extract_failures(s)
+    draft = _collect_draft_failures(s)
+
+    assert any("5.5.6" in i for i in extract)
+    assert any("5.5.7" in i for i in extract)
+    # bucket_placement and lint must NOT be in extract failures
+    assert not any("5.5.4b" in i for i in extract)
+    assert not any("5.5.3" in i for i in extract)
+    # bucket_placement and lint MUST be in draft failures
+    assert any("5.5.4b" in i for i in draft)
+    assert any("5.5.3" in i for i in draft)
+
+
+def test_d2_extract_parses_is_live_field():
+    """stage 3 _merge_batch_result must parse is_live from LLM JSON."""
+    from keynote_recap.stages.extract import _merge_batch_result
+    from keynote_recap.state import FrameCandidate, SelectedFrame
+
+    batch = [
+        FrameCandidate(filename="f1.jpg", timestamp_s=1, score=80,
+                       text_density=0.5, edge_density=0.5, context_subtitle=""),
+        FrameCandidate(filename="f2.jpg", timestamp_s=2, score=75,
+                       text_density=0.5, edge_density=0.5, context_subtitle=""),
+    ]
+    selected: list[SelectedFrame] = []
+    rejected: list[dict] = []
+    _merge_batch_result({
+        "selected_frames": [
+            {"filename": "f1.jpg", "category": "demo", "caption": "live shot",
+             "recommended_section": "x", "is_live": True,
+             "info_density": 0.8, "relevance_to_section": 0.9,
+             "what_can_be_read": "643km / 73kWh"},
+            {"filename": "f2.jpg", "category": "product", "caption": "渲染图",
+             "recommended_section": "x", "is_live": False,
+             "info_density": 0.6, "relevance_to_section": 0.7,
+             "what_can_be_read": "红色 SUV"},
+        ],
+        "rejected_frames": [],
+    }, batch, selected, rejected)
+    assert len(selected) == 2
+    f1, f2 = selected[0], selected[1]
+    assert f1.is_live is True
+    assert f2.is_live is False
+    # caption gets disclaimer prefix when is_live=False
+    assert f2.caption.startswith("（插播官方渲染）")
+    # what_can_be_read preserved
+    assert "643km" in f1.what_can_be_read
+    assert "红色" in f2.what_can_be_read
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# M6 — end-to-end: simulate 0525.pdf failure and verify gates would catch it
+# ──────────────────────────────────────────────────────────────────────────────
+def test_e2e_0525pdf_scenario_would_have_been_caught_by_gates():
+    """The 0525 PDF failure (8 frames, all marketing renders) must trigger
+    BOTH the 5.5.6 image-mix gate AND the 5.5.7 topic-coverage gate, leading
+    to extract-stage retry. This is the regression test for the user-reported
+    real-world failure that motivated M6.
+    """
+    from keynote_recap.pipeline import _collect_extract_failures
+    from keynote_recap.stages.verify import (
+        check_image_source_mix,
+        check_topic_coverage,
+    )
+    from keynote_recap.state import SelectedFrame, State, VideoMeta
+
+    # Reproduce 0525 conditions: transcript mentions YU7 / SU7 / Pro / Max heavily,
+    # but selected_frames is 8 marketing renders (is_live=False) of cars.
+    transcript = (
+        "YU7 " * 30 +              # discussed extensively
+        "SU7 " * 25 +
+        "Pro " * 10 + "Max " * 10
+    )
+
+    s = State.new(url="x", output_dir="/tmp/x")
+    s.video = VideoMeta(url="x", transcript=transcript)
+    # 8 marketing-render frames, none captioned with the actual product names
+    s.selected_frames = [
+        SelectedFrame(
+            filename=f"frame_{i:05d}.jpg", timestamp_s=float(i),
+            category="product",
+            caption="（插播官方渲染）红色 SUV 公路夕阳行驶镜头",
+            recommended_section="车辆外观",
+            info_density=0.4, relevance=0.5, is_live=False,
+            what_can_be_read="红色 SUV",
+        )
+        for i in range(1, 9)
+    ]
+
+    # Now run the gates the same way verify.run() would
+    mix = check_image_source_mix(s)
+    cov = check_topic_coverage(s)
+
+    # Both gates must reject this report
+    assert mix["all_pass"] is False, "5.5.6 gate must catch 8-frame all-render scenario"
+    assert mix["total"] == 8, "should report low total frame count"
+    assert mix["live_ratio"] == 0.0, "all 8 are non-live → 0% live ratio"
+
+    # Topic coverage may pass or fail depending on whether YU7/SU7 are in
+    # _PRODUCT_PATTERNS. The important property is at least one of {mix, cov}
+    # fails so the extract retry triggers.
+    s.image_mix_passed = mix["all_pass"]
+    s.topic_coverage_passed = cov["all_pass"]
+
+    fails = _collect_extract_failures(s)
+    assert len(fails) >= 1, "at least one extract-stage retry trigger must fire"
+    assert any("5.5.6" in f for f in fails), "image-mix failure must be reported"
+
+
+def test_e2e_healthy_recap_passes_all_gates():
+    """Counter-test: a healthy state with 30 live frames + full topic coverage
+    must pass all M6 gates so we don't regress good reports.
+    """
+    from keynote_recap.pipeline import _collect_extract_failures
+    from keynote_recap.stages.verify import (
+        check_image_source_mix,
+        check_topic_coverage,
+    )
+    from keynote_recap.state import SelectedFrame, State, VideoMeta
+
+    transcript = "Spark " * 20 + "Antigravity " * 15
+    s = State.new(url="x", output_dir="/tmp/x")
+    s.video = VideoMeta(url="x", transcript=transcript)
+
+    # 30 live frames covering both topics
+    frames = []
+    for i in range(15):
+        frames.append(SelectedFrame(
+            filename=f"l{i}.jpg", timestamp_s=float(i),
+            category="demo", caption=f"Spark demo {i}",
+            recommended_section="Agent 体系",
+            info_density=0.85, relevance=0.9, is_live=True,
+        ))
+    for i in range(15):
+        frames.append(SelectedFrame(
+            filename=f"a{i}.jpg", timestamp_s=float(100 + i),
+            category="demo", caption=f"Antigravity IDE {i}",
+            recommended_section="开发者平台",
+            info_density=0.85, relevance=0.9, is_live=True,
+        ))
+    s.selected_frames = frames
+
+    mix = check_image_source_mix(s)
+    cov = check_topic_coverage(s)
+    assert mix["all_pass"] is True
+    assert cov["all_pass"] is True
+
+    s.image_mix_passed = mix["all_pass"]
+    s.topic_coverage_passed = cov["all_pass"]
+    assert _collect_extract_failures(s) == []

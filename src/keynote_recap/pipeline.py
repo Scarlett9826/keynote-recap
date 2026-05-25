@@ -38,11 +38,12 @@ STAGES: dict[str, tuple[float, Callable[[State, Config], State]]] = {
 }
 
 
-def _collect_quality_failures(state: State) -> list[str]:
-    """Inspect verify-stage flags on state; return human-readable failure list.
+def _collect_draft_failures(state: State) -> list[str]:
+    """Failures that should be fixed by re-running stage 5 (draft).
 
-    Empty list → quality gate passed; non-empty → retry draft once
-    (or, after retry, surface as banner warnings on the rendered report).
+    These are writing-side problems: the frame selection was OK but the
+    drafting LLM produced poor markdown structure / forbidden phrases /
+    placed images in the wrong chapter despite the buckets.
     """
     issues: list[str] = []
     if state.placeholder_detected:
@@ -56,11 +57,41 @@ def _collect_quality_failures(state: State) -> list[str]:
         issues.append(
             "5.5.3 anti-AI lint: forbidden phrases/emoji/transcription tells found"
         )
+    if not state.bucket_placement_passed:
+        issues.append(
+            "5.5.4b bucket placement: images placed cross-bucket "
+            "(LLM ignored per-chapter frame buckets)"
+        )
     if not state.structure_check_passed:
         issues.append(
             "5.5.5 structure: missing 核心判断/quotes/tables, or chapter heading malformed"
         )
     return issues
+
+
+def _collect_extract_failures(state: State) -> list[str]:
+    """Failures that require re-running stage 3 (extract — vision filter).
+
+    These are frame-selection problems: stage 5 cannot fix them because the
+    selected_frames pool itself is bad.
+    """
+    issues: list[str] = []
+    if not state.image_mix_passed:
+        issues.append(
+            "5.5.6 image mix: total frames < 25 or live ratio < 70% "
+            "(too many marketing renders / inserts vs. live keynote frames)"
+        )
+    if not state.topic_coverage_passed:
+        issues.append(
+            "5.5.7 topic coverage: a high-frequency topic in the transcript "
+            "has zero associated frames (vision LLM was too aggressive)"
+        )
+    return issues
+
+
+# Backward-compat alias for any external caller; prefer the two new helpers.
+def _collect_quality_failures(state: State) -> list[str]:
+    return _collect_extract_failures(state) + _collect_draft_failures(state)
 
 
 def run_pipeline(
@@ -99,45 +130,79 @@ def run_pipeline(
                 raise
             return state
 
-        # ─── Quality gate (after stage 5.5 verify): retry draft once if hard-fail ───
-        if num == 5.5 and state.draft_retry_count == 0:
-            hard_fails = _collect_quality_failures(state)
-            if hard_fails:
+        # ─── Quality gate (after stage 5.5 verify): two-tier retry policy ───
+        # Tier 1: extract failures (image mix / topic coverage) → re-run from stage 3.
+        #         Stage 5 cannot fix selected_frames being wrong.
+        # Tier 2: draft failures (lint / placeholder / bucket placement / coverage)
+        #         → re-run only stage 5 (draft).
+        # Each tier retries at most once; remaining issues become banner warnings.
+        if num == 5.5:
+            # Tier 1: extract retry (highest priority)
+            extract_fails = _collect_extract_failures(state)
+            if extract_fails and state.extract_retry_count == 0:
                 console.print(
-                    f"\n[bold yellow]⚠ Quality gate failed:[/] "
-                    f"{len(hard_fails)} hard issues detected — re-running draft once.\n"
+                    f"\n[bold yellow]⚠ Frame-selection gate failed:[/] "
+                    f"{len(extract_fails)} hard issues — re-running stage 3 (vision filter).\n"
                 )
-                for issue in hard_fails:
+                for issue in extract_fails:
                     console.print(f"   • {issue}")
-                state.draft_retry_count = 1
-                # Roll back to before stage 5 so draft + verify re-run
-                state.last_completed_stage = 4.0
+                state.extract_retry_count = 1
+                # Roll back to before stage 3 so extract + research(skip) + draft + verify all re-run
+                state.last_completed_stage = 2.0
                 state.save()
-                # Re-run stage 5 (draft) and stage 5.5 (verify) inline
                 try:
+                    state = STAGES["extract"][1](state, config)
+                    # research is expensive and not affected by frame selection;
+                    # only re-run if research_notes_path is missing
+                    if not state.research_notes_path:
+                        state = STAGES["research"][1](state, config)
                     state = STAGES["draft"][1](state, config)
                     state = STAGES["verify"][1](state, config)
                 except Exception as e:
-                    console.print(f"[bold red]Retry draft/verify failed:[/] {e}")
+                    console.print(f"[bold red]Stage 3 retry failed:[/] {e}")
                     state.save()
                     if debug:
                         raise
                     return state
-                # After retry, record any remaining failures as warnings (but proceed)
-                still_failing = _collect_quality_failures(state)
-                if still_failing:
-                    state.quality_passed = False
-                    state.final_quality_warnings = still_failing
-                    console.print(
-                        f"\n[bold yellow]⚠ Retry still failed[/]: "
-                        f"{len(still_failing)} issues remain — banner will be added to report.\n"
-                    )
-                    for issue in still_failing:
-                        console.print(f"   • {issue}")
-                else:
-                    state.quality_passed = True
-                    console.print("[green]✓ Quality gate passed after retry[/]\n")
+                # Re-collect after stage 3 retry (may now reveal pure-draft issues)
+
+            # Tier 2: draft retry
+            draft_fails = _collect_draft_failures(state)
+            if draft_fails and state.draft_retry_count == 0:
+                console.print(
+                    f"\n[bold yellow]⚠ Draft-quality gate failed:[/] "
+                    f"{len(draft_fails)} hard issues — re-running stage 5 (draft) once.\n"
+                )
+                for issue in draft_fails:
+                    console.print(f"   • {issue}")
+                state.draft_retry_count = 1
+                state.last_completed_stage = 4.0
                 state.save()
+                try:
+                    state = STAGES["draft"][1](state, config)
+                    state = STAGES["verify"][1](state, config)
+                except Exception as e:
+                    console.print(f"[bold red]Stage 5 retry failed:[/] {e}")
+                    state.save()
+                    if debug:
+                        raise
+                    return state
+
+            # Final assessment after all retries
+            still_failing = _collect_quality_failures(state)
+            if still_failing:
+                state.quality_passed = False
+                state.final_quality_warnings = still_failing
+                console.print(
+                    f"\n[bold yellow]⚠ Quality gate still failing[/]: "
+                    f"{len(still_failing)} issues remain — banner will be added to report.\n"
+                )
+                for issue in still_failing:
+                    console.print(f"   • {issue}")
+            else:
+                state.quality_passed = True
+                console.print("[green]✓ Quality gate passed[/]\n")
+            state.save()
 
         # Checkpoint pause
         if checkpoint and num in config.stages.checkpoints and num < end_stage:

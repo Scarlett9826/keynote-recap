@@ -682,13 +682,16 @@ def test_render_banner_appears_when_quality_failed():
         s = render_run(s, cfg)
 
         html = Path(s.report_html_path).read_text()
-        assert "quality-banner" in html
-        assert "未通过质量门" in html
+        assert '<div class="quality-banner quality-banner-red">' in html
+        assert "本报告未通过项目质量门" in html
         assert "invented placeholder names" in html
+        # M7: red banner triggers responsibility section
+        assert "模型与责任边界" in html
+        assert "项目（keynote-recap）负责" in html
 
 
 def test_render_no_banner_when_quality_passed():
-    """No banner when quality_passed=True (default)."""
+    """No banner when quality_passed=True and no env/model warnings."""
     import tempfile
     from pathlib import Path
 
@@ -704,14 +707,317 @@ def test_render_no_banner_when_quality_passed():
         s = State.new(url="https://x", output_dir=str(outdir))
         s.video = VideoMeta(url="https://x", title="Test")
         s.report_md_path = str(md)
-        # quality_passed defaults to True
+        # quality_passed defaults to True; preflight/runtime warnings empty
 
         cfg = load_config()
         s = render_run(s, cfg)
         html = Path(s.report_html_path).read_text()
-        # CSS class definition is always present; check the banner div isn't rendered
-        assert '<div class="quality-banner">' not in html
-        assert "未通过质量门" not in html
+        # CSS class definitions always present in <style>; check rendered <div>s
+        assert '<div class="quality-banner quality-banner-red">' not in html
+        assert '<div class="quality-banner quality-banner-yellow">' not in html
+        assert "本报告未通过项目质量门" not in html
+        assert "本次运行存在环境" not in html
+        # responsibility section only emitted when banner present
+        assert "模型与责任边界" not in html
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# M7 / v0.2.2 — preflight env + tri-color banner + responsibility section
+# ──────────────────────────────────────────────────────────────────────────────
+def test_preflight_env_python_version_check():
+    """Python version check returns ok for current interpreter (>= 3.10 in CI)."""
+    from keynote_recap.preflight_env import check_python_version
+
+    r = check_python_version()
+    assert r.what == "python"
+    assert r.ok is True
+
+
+def test_preflight_env_ffmpeg_check_handles_missing(monkeypatch):
+    """When ffmpeg binary is not on PATH, check_ffmpeg returns blocker."""
+    import keynote_recap.preflight_env as pe
+
+    monkeypatch.setattr(pe.shutil, "which", lambda b: None)
+    r = pe.check_ffmpeg()
+    assert r.ok is False
+    assert r.severity == "blocker"
+    assert "ffmpeg" in r.detail.lower()
+    assert r.fix is not None
+    assert "brew install ffmpeg" in r.fix
+
+
+def test_preflight_env_api_key_check_unset(monkeypatch):
+    """Empty API key env var returns blocker with a clear fix command."""
+    from keynote_recap.preflight_env import check_api_key
+
+    monkeypatch.delenv("FAKE_KEY", raising=False)
+    r = check_api_key("FAKE_KEY")
+    assert r.ok is False
+    assert r.severity == "blocker"
+    assert "FAKE_KEY" in r.detail
+    assert "export FAKE_KEY=" in r.fix
+
+
+def test_preflight_env_api_key_check_set(monkeypatch):
+    """A normal-length API key passes."""
+    from keynote_recap.preflight_env import check_api_key
+
+    monkeypatch.setenv("FAKE_KEY", "x" * 40)
+    r = check_api_key("FAKE_KEY")
+    assert r.ok is True
+
+
+def test_preflight_env_api_key_check_too_short(monkeypatch):
+    """A suspiciously short key gets a warning, not a blocker."""
+    from keynote_recap.preflight_env import check_api_key
+
+    monkeypatch.setenv("FAKE_KEY", "abc")
+    r = check_api_key("FAKE_KEY")
+    assert r.ok is False
+    assert r.severity == "warning"
+
+
+def test_preflight_env_run_all_returns_list(tmp_path, monkeypatch):
+    """Smoke: run_all_checks returns a list of EnvChecks; warning_summaries
+    only includes non-blocker failures."""
+    from keynote_recap.preflight_env import (
+        EnvCheck,
+        has_blocker,
+        run_all_checks,
+        warning_summaries,
+    )
+
+    monkeypatch.setenv("FAKE_KEY", "x" * 40)
+    checks = run_all_checks(output_dir=tmp_path, api_key_env="FAKE_KEY")
+    assert isinstance(checks, list)
+    assert all(isinstance(c, EnvCheck) for c in checks)
+
+    # Construct a fake-mixed result to verify helpers
+    fake = [
+        EnvCheck(ok=True, what="a", detail="ok"),
+        EnvCheck(ok=False, what="b", detail="blocked", severity="blocker", fix="fix"),
+        EnvCheck(ok=False, what="c", detail="warn", severity="warning"),
+    ]
+    assert has_blocker(fake) is True
+    summaries = warning_summaries(fake)
+    assert any("warn" in s for s in summaries)
+    assert not any("blocked" in s for s in summaries)
+
+
+def test_render_yellow_banner_for_env_warnings():
+    """Env preflight warnings produce a yellow (not red) banner + responsibility section."""
+    import tempfile
+    from pathlib import Path
+
+    from keynote_recap.config import load_config
+    from keynote_recap.stages.render import run as render_run
+    from keynote_recap.state import State, VideoMeta
+
+    with tempfile.TemporaryDirectory() as tmp:
+        outdir = Path(tmp)
+        md = outdir / "report.md"
+        md.write_text("# Test\n\n## 一、demo\n\nbody\n")
+
+        s = State.new(url="https://x", output_dir=str(outdir))
+        s.video = VideoMeta(url="https://x", title="Test")
+        s.report_md_path = str(md)
+        s.preflight_env_warnings = ["disk: only 2.0 GB free at /tmp"]
+
+        cfg = load_config()
+        s = render_run(s, cfg)
+        html = Path(s.report_html_path).read_text()
+        assert '<div class="quality-banner quality-banner-yellow">' in html
+        assert '<div class="quality-banner quality-banner-red">' not in html
+        assert "本次运行存在环境" in html
+        assert "only 2.0 GB free" in html
+        # responsibility section IS shown for yellow banner
+        assert "模型与责任边界" in html
+        assert "项目<b>不</b>负责" in html
+
+
+def test_render_yellow_banner_for_unverified_model():
+    """Unverified vision model triggers yellow banner with model-warning section."""
+    import tempfile
+    from pathlib import Path
+
+    from keynote_recap.config import load_config
+    from keynote_recap.stages.render import run as render_run
+    from keynote_recap.state import State, VideoMeta
+
+    with tempfile.TemporaryDirectory() as tmp:
+        outdir = Path(tmp)
+        md = outdir / "report.md"
+        md.write_text("# Test\n\n## 一、demo\n\nbody\n")
+
+        s = State.new(url="https://x", output_dir=str(outdir))
+        s.video = VideoMeta(url="https://x", title="Test")
+        s.report_md_path = str(md)
+        s.preflight_model_warnings = [
+            "extract (stage 3 frame filter) uses unverified model some-custom-model"
+        ]
+        s.models_used = {
+            "extract": "some-custom-model",
+            "draft": "claude-opus-4",
+            "research": "gpt-4o",
+            "verify": "some-custom-model",
+        }
+        s.model_tiers = {
+            "extract": "unknown",
+            "draft": "verified_multimodal",
+            "research": "verified_multimodal",
+            "verify": "unknown",
+        }
+
+        cfg = load_config()
+        s = render_run(s, cfg)
+        html = Path(s.report_html_path).read_text()
+        assert '<div class="quality-banner quality-banner-yellow">' in html
+        assert "some-custom-model" in html
+        # responsibility table lists the actual model
+        assert "未验证" in html
+        assert "已验证多模态" in html
+
+
+def test_render_yellow_banner_for_runtime_probe():
+    """Runtime capability probe warning surfaces in yellow banner."""
+    import tempfile
+    from pathlib import Path
+
+    from keynote_recap.config import load_config
+    from keynote_recap.stages.render import run as render_run
+    from keynote_recap.state import State, VideoMeta
+
+    with tempfile.TemporaryDirectory() as tmp:
+        outdir = Path(tmp)
+        md = outdir / "report.md"
+        md.write_text("# Test\n\n## 一、demo\n\nbody\n")
+
+        s = State.new(url="https://x", output_dir=str(outdir))
+        s.video = VideoMeta(url="https://x", title="Test")
+        s.report_md_path = str(md)
+        s.runtime_warnings = [
+            "stage 3 only produced 2 frames (< 5). Vision model may be weak."
+        ]
+
+        cfg = load_config()
+        s = render_run(s, cfg)
+        html = Path(s.report_html_path).read_text()
+        assert '<div class="quality-banner quality-banner-yellow">' in html
+        assert "跑中能力探针" in html
+        assert "only produced 2 frames" in html
+
+
+def test_render_red_takes_precedence_over_yellow():
+    """When both quality_failed AND env warnings exist, red wins."""
+    import tempfile
+    from pathlib import Path
+
+    from keynote_recap.config import load_config
+    from keynote_recap.stages.render import run as render_run
+    from keynote_recap.state import State, VideoMeta
+
+    with tempfile.TemporaryDirectory() as tmp:
+        outdir = Path(tmp)
+        md = outdir / "report.md"
+        md.write_text("# Test\n\n## 一、demo\n\nbody\n")
+
+        s = State.new(url="https://x", output_dir=str(outdir))
+        s.video = VideoMeta(url="https://x", title="Test")
+        s.report_md_path = str(md)
+        s.quality_passed = False
+        s.final_quality_warnings = ["5.5.0 placeholder names"]
+        s.preflight_env_warnings = ["disk: only 1 GB free"]
+
+        cfg = load_config()
+        s = render_run(s, cfg)
+        html = Path(s.report_html_path).read_text()
+        assert '<div class="quality-banner quality-banner-red">' in html
+        assert '<div class="quality-banner quality-banner-yellow">' not in html
+        assert "本报告未通过项目质量门" in html
+
+
+def test_runtime_probe_extract_few_frames():
+    """_probe_extract_output flags runs with very few selected frames."""
+    from keynote_recap.pipeline import _probe_extract_output
+    from keynote_recap.state import SelectedFrame, State
+
+    s = State.new(url="https://x", output_dir="/tmp/x")
+    s.models_used = {"extract": "some-weak-model"}
+    s.selected_frames = [
+        SelectedFrame(
+            filename=f"frame_{i:05d}.jpg",
+            timestamp_s=float(i),
+            category="demo",
+            caption=f"c{i}",
+            recommended_section="一",
+            info_density=0.5,
+            relevance=0.5,
+        )
+        for i in range(2)
+    ]
+    warn = _probe_extract_output(s)
+    assert warn is not None
+    assert "2 frames" in warn
+    assert "some-weak-model" in warn
+
+    # Healthy: 10 frames -> no warning
+    s.selected_frames = s.selected_frames * 5
+    assert _probe_extract_output(s) is None
+
+
+def test_runtime_probe_research_no_verified():
+    """_probe_research_output flags runs where research turned up nothing."""
+    from keynote_recap.pipeline import _probe_research_output
+    from keynote_recap.state import FactToVerify, State
+
+    s = State.new(url="https://x", output_dir="/tmp/x")
+    s.models_used = {"research": "some-text-only"}
+    s.facts_to_verify = [
+        FactToVerify(
+            id="f1",
+            category="product_name",
+            transcript_quote="...",
+            transcript_timestamp_s=10.0,
+            what_to_verify="...",
+        )
+    ]
+    s.verified_facts = []  # zero verified despite having facts to verify
+    warn = _probe_research_output(s)
+    assert warn is not None
+    assert "some-text-only" in warn
+
+    # Healthy: nothing to verify -> no warning
+    s.facts_to_verify = []
+    assert _probe_research_output(s) is None
+
+
+def test_preflight_models_unknown_blocks_without_force():
+    """M7 upgrade: unverified vision model now blocks (was warn-only in v0.2.1)."""
+    from keynote_recap.cli import _preflight_models
+    from keynote_recap.config import load_config
+
+    cfg = load_config()
+    cfg.llm.models.extract = "totally-unknown-vision-model-xyz"
+    cfg.llm.models.verify = "totally-unknown-vision-model-xyz"
+
+    proceed, warnings = _preflight_models(cfg, force=False)
+    assert proceed is False
+    assert len(warnings) >= 2  # both extract and verify warned
+    assert any("totally-unknown" in w for w in warnings)
+
+
+def test_preflight_models_force_allows_unknown():
+    """--force lets unverified model proceed (warnings still recorded)."""
+    from keynote_recap.cli import _preflight_models
+    from keynote_recap.config import load_config
+
+    cfg = load_config()
+    cfg.llm.models.extract = "totally-unknown-vision-model-xyz"
+    cfg.llm.models.verify = "totally-unknown-vision-model-xyz"
+
+    proceed, warnings = _preflight_models(cfg, force=True)
+    assert proceed is True
+    assert len(warnings) >= 2  # still surface them for the report banner
 
 
 def test_draft_user_prompt_warns_against_placeholder_names():

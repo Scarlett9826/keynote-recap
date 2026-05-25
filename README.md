@@ -68,6 +68,18 @@ ban 词、必有核心判断、≥ 8 引用、≥ 8 表格、callout / 信源说
 - verify 5.5.6 硬门：总数 ≥ 25 且 live ≥ 70%；5.5.7 主题覆盖：transcript 高频产品名必须有图；任一不达 → 自动重跑 stage 3 一次（不只是 stage 5）
 - verify 5.5.4b 硬门：图必须落在 stage 3 给的 `recommended_section` 对应章节
 
+**v0.2.2 起，环境与模型问题不再静默拖低质量**（M7 expectation management）：
+
+- **跑前体检**：检查 ffmpeg / ffprobe / yt-dlp / Python ≥ 3.10 / 磁盘 ≥ 5GB / API key；任一缺失立即终止并给出 macOS / Ubuntu / Windows 安装命令（D1）
+- **未验证视觉模型默认拦截**：v0.2.1 是软警告继续跑，v0.2.2 默认终止，需 `--force` 才能跑（避免用户用了未知模型却得到低质报告还以为是项目问题）（D2）
+- **每个 stage 跑前打印模型 + 任务 + guards box**：用户实时看到本次具体用了什么模型、能力等级、有哪些质量门（D3）
+- **跑中能力探针**：stage 3 选图 < 5 / stage 4 验证零事实 → 写入 `runtime_warnings`，最终在报告里露出（D4）
+- **报告三色 banner + §模型与责任边界**：
+  - 红色 = 项目质量门失败（项目责任）
+  - 黄色 = 环境 / 模型告警（用户环境责任，非项目质量缺陷）
+  - 任一 banner 触发时，报告末尾自动追加「模型与责任边界」section，列出本次每个 stage 实际用了什么模型 + 能力等级，并明确划分项目负责 vs 不负责范围
+  - 健康跑（无 banner）报告完全干净，不显示责任边界（D5）
+
 ## 5 分钟上手
 
 ```bash

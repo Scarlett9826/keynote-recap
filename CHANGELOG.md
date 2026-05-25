@@ -4,6 +4,105 @@ All notable changes to **keynote-recap** are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.2] — M7 expectation management (2026-05-25)
+
+Focused fix for "user can't tell project-design problems apart from
+environment / model problems". When a colleague's machine lacks ffmpeg, or
+they swap in a custom multimodal model that's weaker than the project's
+verified set, the report quality drops silently and users blame the project.
+This release surfaces all three failure modes loudly: at preflight, at every
+stage banner, and in the final report.
+
+### What changed
+
+**D1. Preflight environment check (`preflight_env.py`, new module)**
+
+Before any work begins, runs 6 checks and aborts with a copy-pastable fix
+hint on any blocker:
+
+- Python ≥ 3.10
+- `ffmpeg` and `ffprobe` on PATH (with version)
+- `yt-dlp` on PATH or installed as Python module
+- `shutil.disk_usage(output_dir).free ≥ 5 GB` (warning, not blocker)
+- The configured `cfg.llm.api_key_env` env var is set and ≥ 20 chars
+
+Wired into both `recap` and `doctor` commands.
+
+**D2. Preflight model check upgraded (`cli.py`)**
+
+Previously: vision stage using an UNKNOWN model → soft warning, run
+continues. Now: UNKNOWN model on a vision stage (extract / verify) is
+treated like KNOWN_TEXT_ONLY — abort unless `--force`. Reason: too many
+silent-quality-loss reports from users running the project against a
+custom in-house model that turned out to lack image support.
+
+**D3. Stage banner box (`pipeline.py`)**
+
+Before each stage, prints a 4-line panel:
+
+    ┌─ stage 3 / extract ────────────────────────┐
+    │ model:  claude-opus-4 (verified multimodal)│
+    │ task:   vision LLM 3-principle filter      │
+    │ guards: 5.5.6 live ratio, 5.5.7 topic cov  │
+    └────────────────────────────────────────────┘
+
+Persists `models_used` and `model_tiers` into `state` so the final report
+can reference them.
+
+**D4. Runtime capability probes (`pipeline.py`)**
+
+After stage 3: if `len(selected_frames) < 5`, append warning "vision model
+may have weak image understanding" to `state.runtime_warnings`.
+
+After stage 4: if `facts_to_verify` is non-empty but `verified_facts` is
+empty, append warning "research model may not support web tools".
+
+These catch silent-failure cases that the prompt-level capability probe
+can't detect — the model technically returned output, just very thin.
+
+**D5. Tri-color quality banner + responsibility section (`render.py`)**
+
+Banner colors:
+
+- **Red** — project quality gate failed after retry. Project's responsibility.
+- **Yellow** — env / model preflight or runtime probe surfaced concerns.
+  NOT a project quality issue; user-environment-driven.
+- **None** — healthy run.
+
+Red takes precedence when both apply. Whenever a banner is shown, an end-
+of-report `<section class="responsibility">` is appended with:
+
+- a per-stage table of model + capability tier actually used in this run
+- bullet list of what the project takes responsibility for (methodology,
+  bucket placement, lint, source allowlist…)
+- bullet list of what the project does **not** take responsibility for
+  (user environment, model self-direction, hallucination beyond verified
+  facts, model vision precision ceiling, source video quality)
+- one-line re-run command with stronger model + `--start-stage 5`
+
+Healthy runs (no banner) get a clean report with no responsibility section.
+
+**D6. State extension (`state.py`)**
+
+Added: `preflight_env_warnings`, `preflight_model_warnings`,
+`runtime_warnings`, `models_used`, `model_tiers`.
+
+### Tests
+
+88 passing (74 → 88, +14): preflight_env unit checks for python / ffmpeg /
+api_key (set / unset / too-short); render banner trinity (red / yellow /
+none); red-takes-precedence-over-yellow; runtime probes for low-frame-count
+and zero-verified-facts; preflight_models unknown-blocks-without-force.
+
+### Migration from 0.2.1
+
+No state.json schema break — new fields default to empty. Users on 0.2.1
+keep working. Anyone using a custom non-mainstream LLM may now hit the
+preflight block; pass `--force` once to confirm, and the report will carry
+a yellow banner explaining the limitation.
+
+---
+
 ## [0.2.1] — M6 image pipeline overhaul (2026-05-25)
 
 Targeted fix for the failure mode where reports came out with too few images

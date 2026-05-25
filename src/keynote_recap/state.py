@@ -139,6 +139,16 @@ class State(BaseModel):
     final_quality_warnings: list[str] = Field(default_factory=list)
     quality_passed: bool = True
 
+    # ─── Expectation-management warnings (M7 / v0.2.2) ───
+    # Surfaced both at stage banners and in the final HTML report so users can
+    # tell apart "project-level quality gate" failures from environment / model
+    # capability issues that the project cannot control.
+    preflight_env_warnings: list[str] = Field(default_factory=list)
+    preflight_model_warnings: list[str] = Field(default_factory=list)
+    runtime_warnings: list[str] = Field(default_factory=list)
+    models_used: dict[str, str] = Field(default_factory=dict)
+    model_tiers: dict[str, str] = Field(default_factory=dict)
+
     # ─── Stage 6: render ───
     report_html_path: str = ""
 

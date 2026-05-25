@@ -16,14 +16,123 @@ from pathlib import Path
 from typing import Callable
 
 from rich.console import Console
+from rich.panel import Panel
 from rich.prompt import Confirm
 
 from .config import Config
 from .cost_tracker import format_summary
+from .preflight import ModelTier, check_model_capability
 from .stages import download, draft, extract, render, research, segment, verify
 from .state import State
 
 console = Console()
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Stage banner (M7 / v0.2.2)
+# ──────────────────────────────────────────────────────────────────────────────
+# What model each stage uses, what task it does, and what guards apply.
+# Surfaced as a console panel before the stage runs so users see in real time
+# how the project's design maps onto the actual run.
+_STAGE_INFO: dict[str, dict[str, str]] = {
+    "download": {
+        "model_attr": "",
+        "task": "fetch video + subtitles via yt-dlp",
+        "guards": "—",
+    },
+    "segment": {
+        "model_attr": "",
+        "task": "ffmpeg sample frames + frame_scorer initial filter",
+        "guards": "12-chunk floor (>= 3 per chunk)",
+    },
+    "extract": {
+        "model_attr": "extract",
+        "task": "vision LLM 3-principle filter (info / relevance / dedup)",
+        "guards": "5.5.6 live ratio >= 70%, 5.5.7 topic coverage",
+    },
+    "research": {
+        "model_attr": "research",
+        "task": "extract facts + verify via web search",
+        "guards": "verified-source allowlist",
+    },
+    "draft": {
+        "model_attr": "draft",
+        "task": "outline + body + callout + bucket-constrained image placement",
+        "guards": "5.5.0/1/3/4b/5 hard gates",
+    },
+    "verify": {
+        "model_attr": "verify",
+        "task": "vision-LLM caption verify + anti-AI lint",
+        "guards": "all 5.5.x; failure -> retry tier 1 or 2",
+    },
+    "render": {
+        "model_attr": "",
+        "task": "markdown -> self-contained HTML",
+        "guards": "tri-color quality banner + responsibility section",
+    },
+}
+
+
+def _print_stage_banner(stage_name: str, num: float, config: Config, state: State) -> None:
+    """Print a 4-line panel showing model / task / guards before each stage.
+
+    Helps users realize *during* the run that, e.g., stage 3 is using their
+    custom model, not the project's recommended one.
+    """
+    info = _STAGE_INFO.get(stage_name, {})
+    model_attr = info.get("model_attr", "")
+    task = info.get("task", "")
+    guards = info.get("guards", "—")
+
+    if model_attr:
+        model_name = getattr(config.llm.models, model_attr, "")
+        check = check_model_capability(model_name)
+        if check.tier == ModelTier.VERIFIED_MULTIMODAL:
+            tier_label = "[green]verified multimodal[/]"
+        elif check.tier == ModelTier.KNOWN_TEXT_ONLY:
+            tier_label = "[red]known text-only[/]"
+        else:
+            tier_label = "[yellow]unverified[/]"
+        # Persist for later report rendering.
+        state.models_used[stage_name] = model_name
+        state.model_tiers[stage_name] = check.tier.value
+        model_line = f"model:  [cyan]{model_name}[/]  ({tier_label})"
+    else:
+        model_line = "model:  [dim](no LLM call)[/]"
+
+    body = f"{model_line}\ntask:   {task}\nguards: {guards}"
+    console.print(Panel(body, title=f"stage {num} / {stage_name}", expand=False))
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Runtime capability probes (M7 / v0.2.2)
+# ──────────────────────────────────────────────────────────────────────────────
+def _probe_extract_output(state: State) -> str | None:
+    """If stage 3 selected very few frames, the vision model is probably weak.
+
+    Returns a warning string, or None if output looks healthy.
+    """
+    n = len(state.selected_frames)
+    if n < 5:
+        return (
+            f"stage 3 only produced {n} frames (< 5). Vision model "
+            f"'{state.models_used.get('extract', '?')}' may have weak image "
+            f"understanding; report image quality may suffer."
+        )
+    return None
+
+
+def _probe_research_output(state: State) -> str | None:
+    """If research returned zero verified facts but had things to verify, the
+    research model probably doesn't support web tools / the search is misconfigured.
+    """
+    if state.facts_to_verify and not state.verified_facts:
+        return (
+            f"stage 4 had {len(state.facts_to_verify)} facts to verify but "
+            f"verified 0. Model '{state.models_used.get('research', '?')}' may "
+            f"not support web tools, or the search provider is misconfigured."
+        )
+    return None
 
 
 # Stage registry: name → (numeric, runner)
@@ -103,6 +212,8 @@ def run_pipeline(
     end_stage: float = 6.0,
     checkpoint: bool = True,
     debug: bool = False,
+    preflight_env_warnings: list[str] | None = None,
+    preflight_model_warnings: list[str] | None = None,
 ) -> State:
     """Run pipeline from start_stage to end_stage (inclusive)."""
     config.debug = debug
@@ -114,12 +225,20 @@ def run_pipeline(
     else:
         state = State.new(url=url, output_dir=output_dir)
 
+    # Persist preflight warnings (M7) so the final report can surface them.
+    if preflight_env_warnings:
+        state.preflight_env_warnings = list(preflight_env_warnings)
+    if preflight_model_warnings:
+        state.preflight_model_warnings = list(preflight_model_warnings)
+
     for name, (num, runner) in STAGES.items():
         if num < start_stage or num > end_stage:
             continue
         if num <= state.last_completed_stage and start_stage <= state.last_completed_stage:
             console.print(f"[dim]Skipping stage {num} ({name}) — already done[/]")
             continue
+
+        _print_stage_banner(name, num, config, state)
 
         try:
             state = runner(state, config)
@@ -129,6 +248,20 @@ def run_pipeline(
             if debug:
                 raise
             return state
+
+        # ─── Runtime capability probes (M7) ───
+        # Detect "model technically ran but produced suspiciously thin output"
+        # and surface it as a runtime warning so users don't blame the project.
+        if name == "extract":
+            warn = _probe_extract_output(state)
+            if warn:
+                console.print(f"[yellow]\u26a0 runtime probe:[/] {warn}")
+                state.runtime_warnings.append(warn)
+        elif name == "research":
+            warn = _probe_research_output(state)
+            if warn:
+                console.print(f"[yellow]\u26a0 runtime probe:[/] {warn}")
+                state.runtime_warnings.append(warn)
 
         # ─── Quality gate (after stage 5.5 verify): two-tier retry policy ───
         # Tier 1: extract failures (image mix / topic coverage) → re-run from stage 3.

@@ -149,9 +149,15 @@ def recap(
     console.print(f"[dim]Stages:     {start_stage} → {end_stage}[/]")
     console.print()
 
-    # Preflight: warn / abort if model is known text-only.
-    # Checks the most-used model; per-stage overrides may still differ.
-    if not _preflight_models(cfg, force=force):
+    # Preflight env check (M7 / v0.2.2): catches missing ffmpeg, yt-dlp,
+    # API keys, low disk *before* any time is spent downloading.
+    env_warnings = _preflight_env(cfg, output_dir, force=force)
+    if env_warnings is None:  # blocker
+        sys.exit(2)
+
+    # Preflight: warn / abort if model is known text-only or unverified.
+    proceed, model_warnings = _preflight_models(cfg, force=force)
+    if not proceed:
         sys.exit(2)
 
     try:
@@ -163,6 +169,8 @@ def recap(
             end_stage=float(end_stage),
             checkpoint=checkpoint,
             debug=debug,
+            preflight_env_warnings=env_warnings,
+            preflight_model_warnings=model_warnings,
         )
     except KeyboardInterrupt:
         console.print("\n[yellow]Interrupted by user.[/]")
@@ -175,18 +183,78 @@ def recap(
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Preflight model-capability check
+# Preflight environment check (M7 / v0.2.2)
 # ──────────────────────────────────────────────────────────────────────────────
-def _preflight_models(cfg, force: bool = False) -> bool:
-    """Print a model-capability summary; return False to abort if user picked
-    a model the project knows will silent-fail on vision stages.
+def _preflight_env(cfg, output_dir: Path, force: bool = False) -> list[str] | None:
+    """Print env check summary; return list of warning strings, or None if blocker.
 
-    The two stages that require vision are ``extract`` (stage 3) and
-    ``verify`` (stage 5.5.2). We check both; if either is known-text-only
-    we abort unless ``--force`` is set.
+    Catches missing ffmpeg / yt-dlp / API keys / low disk space so the user
+    knows immediately what's wrong rather than crashing 5 minutes in with an
+    opaque traceback.
 
     Returns:
-        True if pipeline should continue, False if user must fix config first.
+        None  if a blocker is hit and ``force`` is False (caller should sys.exit).
+        list  of warning summaries (may be empty) suitable for persistence into
+              ``state.preflight_env_warnings``.
+    """
+    from . import preflight_env as pe
+
+    api_key_env = cfg.llm.api_key_env
+    checks = pe.run_all_checks(output_dir=output_dir, api_key_env=api_key_env)
+
+    console.print("[bold]Preflight: environment check[/]")
+    for c in checks:
+        if c.ok:
+            console.print(f"  [green]\u2713[/] {c.what}: [dim]{c.detail}[/]")
+        elif c.severity == "blocker":
+            console.print(f"  [red]\u2717[/] {c.what}: {c.detail}")
+        else:
+            console.print(f"  [yellow]\u26a0[/] {c.what}: {c.detail}")
+
+    blockers = [c for c in checks if (not c.ok) and c.severity == "blocker"]
+    if blockers and not force:
+        console.print()
+        console.print("[bold red]Aborted:[/] one or more required tools / settings "
+                      "are missing. Fix and retry:")
+        for c in blockers:
+            console.print()
+            console.print(f"  [bold]{c.what}[/] — {c.detail}")
+            if c.fix:
+                for line in c.fix.splitlines():
+                    console.print(f"    [cyan]{line}[/]")
+        console.print()
+        console.print("[dim]Override with[/] [cyan]--force[/] [dim]if you really "
+                      "want to try anyway (the run will likely crash).[/]")
+        return None
+
+    if blockers and force:
+        console.print()
+        console.print("[yellow]\u26a0 --force set; continuing despite missing tools.[/] "
+                      "Expect a hard crash on the affected stage.")
+
+    console.print()
+    return pe.warning_summaries(checks)
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Preflight model-capability check
+# ──────────────────────────────────────────────────────────────────────────────
+def _preflight_models(cfg, force: bool = False) -> tuple[bool, list[str]]:
+    """Print a model-capability summary; return (proceed, warnings).
+
+    The two stages that require vision are ``extract`` (stage 3) and
+    ``verify`` (stage 5.5.2). For each:
+
+    - ``VERIFIED_MULTIMODAL``  → ✓ green, proceed silently
+    - ``KNOWN_TEXT_ONLY``       → ✗ red, abort unless ``--force``
+    - ``UNKNOWN``               → ⚠ yellow, abort unless ``--force``
+                                  (M7 / v0.2.2 — was soft-warn previously;
+                                  too many silent-quality-loss reports)
+
+    Returns:
+        (proceed, warnings) where ``warnings`` is a list of strings that
+        will be persisted into ``state.preflight_model_warnings`` so the
+        final report can surface them in the quality banner.
     """
     from .preflight import ModelTier, VERIFIED_MODELS_DOC, check_model_capability
 
@@ -197,8 +265,9 @@ def _preflight_models(cfg, force: bool = False) -> bool:
     }
 
     console.print("[bold]Preflight: model capability check[/]")
-    has_blocker = False
+    has_text_only = False
     has_unknown = False
+    warnings: list[str] = []
     for stage_name, model_name in vision_stages.items():
         result = check_model_capability(model_name)
         if result.tier == ModelTier.VERIFIED_MULTIMODAL:
@@ -207,38 +276,51 @@ def _preflight_models(cfg, force: bool = False) -> bool:
             console.print(
                 f"  [red]✗[/] {stage_name}: [cyan]{model_name}[/] — {result.note}"
             )
-            has_blocker = True
+            has_text_only = True
+            warnings.append(f"{stage_name} uses known text-only model {model_name}: {result.note}")
         else:  # UNKNOWN
             console.print(
                 f"  [yellow]⚠[/] {stage_name}: [cyan]{model_name}[/] — {result.note}"
             )
             has_unknown = True
+            warnings.append(f"{stage_name} uses unverified model {model_name}: {result.note}")
 
-    if has_blocker and not force:
+    blocked = has_text_only or has_unknown
+
+    if blocked and not force:
         console.print()
-        console.print("[bold red]Aborted:[/] one or more vision stages use a "
-                      "known text-only model.")
+        if has_text_only:
+            console.print("[bold red]Aborted:[/] one or more vision stages use a "
+                          "known text-only model.")
+        else:
+            console.print("[bold yellow]Aborted:[/] one or more vision stages use a "
+                          "model not on the verified-multimodal list.")
         console.print()
         console.print(VERIFIED_MODELS_DOC)
         console.print()
-        console.print("[dim]Override with[/] [cyan]--force[/] [dim]if you really want to "
-                      "try (the prompt-level capability probe will still abort the run "
-                      "when the model fails to see images).[/]")
-        return False
+        console.print("[dim]Override with[/] [cyan]--force[/] [dim]to run anyway. "
+                      "If the model lacks image support the prompt-level capability probe "
+                      "will abort the run with a clear error; if it has weak image support "
+                      "the run will complete but the report will carry a yellow quality "
+                      "banner so readers know not to blame the project for the output.[/]")
+        return False, warnings
 
-    if has_blocker and force:
+    if blocked and force:
         console.print()
-        console.print("[yellow]⚠ --force set; continuing despite text-only model.[/] "
-                      "Stage 3 / 5.5.2 will likely fail at the prompt-level capability probe.")
-
-    if has_unknown:
-        console.print()
-        console.print("[dim]Some models are not on the verified list. If they support "
-                      "image input the run will succeed; otherwise the prompt-level "
-                      "capability probe will abort with a clear error.[/]")
+        if has_text_only:
+            console.print(
+                "[yellow]\u26a0 --force set; continuing despite text-only model.[/] "
+                "Stage 3 / 5.5.2 will likely fail at the prompt-level capability probe."
+            )
+        else:
+            console.print(
+                "[yellow]\u26a0 --force set; continuing with unverified vision model.[/] "
+                "The final report will carry a quality banner indicating the model "
+                "is not on the verified list."
+            )
 
     console.print()
-    return True
+    return True, warnings
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -309,10 +391,15 @@ def doctor(config: Path | None, llm: str | None, llm_all: str | None) -> None:
     console.print(f"  verify:   [cyan]{cfg.llm.models.verify}[/]     [dim](stage 5.5, needs vision)[/]")
     console.print()
 
-    ok = _preflight_models(cfg, force=False)
+    # Run env check against current working dir (doctor doesn't know an
+    # output dir; this gives a representative disk-space reading).
+    env_warnings = _preflight_env(cfg, Path.cwd(), force=False)
+    env_ok = env_warnings is not None
 
-    if ok:
-        console.print("[green]All vision-required stages have a workable model.[/]")
+    proceed, _ = _preflight_models(cfg, force=False)
+
+    if env_ok and proceed:
+        console.print("[green]All preflight checks passed.[/]")
         console.print()
         console.print("[dim]Reference list (verified models):[/]")
         console.print(VERIFIED_MODELS_DOC)

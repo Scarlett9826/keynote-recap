@@ -18,6 +18,7 @@ from pathlib import Path
 from rich.console import Console
 from rich.progress import Progress
 
+from .. import methodology as M
 from ..config import Config
 from ..cost_tracker import track
 from ..llm_client import LLMClient
@@ -267,7 +268,7 @@ def _verify_facts(
 
     # Sort by priority, cap to max_queries
     priority_order = {"high": 0, "medium": 1, "low": 2}
-    sorted_facts = sorted(facts, key=lambda f: priority_order.get(f.priority, 2))[: cfg.search.max_queries]
+    sorted_facts = sorted(facts, key=lambda f: priority_order.get(f.priority, 2))[: M.RESEARCH_MAX_QUERIES]
 
     # ─── Detect publisher & build candidate URL pool ───
     transcript = state.video.transcript if state.video else ""
@@ -293,7 +294,7 @@ def _verify_facts(
         seen: set[str] = set()
         candidate_urls = [u for u in candidate_urls if not (u in seen or seen.add(u))]
         # Cap to a reasonable budget
-        candidate_urls = candidate_urls[: cfg.search.max_webfetch * 2]
+        candidate_urls = candidate_urls[: M.RESEARCH_MAX_WEBFETCH * 2]
     else:
         console.print("  [4.2] No publisher detected; using search-only mode")
 
@@ -307,7 +308,7 @@ def _verify_facts(
             for fact in sorted_facts:
                 hit = None
                 for url in candidate_urls:
-                    if fetch_count >= cfg.search.max_webfetch:
+                    if fetch_count >= M.RESEARCH_MAX_WEBFETCH:
                         break
                     # Skip URLs already-cached as failed
                     if url in page_cache and not page_cache[url]:
@@ -332,7 +333,7 @@ def _verify_facts(
     remaining = [f for f in sorted_facts if f.id not in verified_ids]
 
     # ─── Pass 2: search fallback ───
-    if remaining and fetch_count < cfg.search.max_webfetch:
+    if remaining and fetch_count < M.RESEARCH_MAX_WEBFETCH:
         provider = get_search_provider(cfg.search)
         with Progress(transient=True) as progress:
             task = progress.add_task("search fallback", total=len(remaining))
@@ -365,7 +366,7 @@ def _verify_facts(
                     continue
 
                 content_summary = chosen.snippet
-                if fetch_count < cfg.search.max_webfetch:
+                if fetch_count < M.RESEARCH_MAX_WEBFETCH:
                     ok, content = webfetch(chosen.url, timeout=cfg.search.timeout_s, max_chars=8000)
                     fetch_count += 1
                     if ok:

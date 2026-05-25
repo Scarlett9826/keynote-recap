@@ -80,6 +80,13 @@ ban 词、必有核心判断、≥ 8 引用、≥ 8 表格、callout / 信源说
   - 任一 banner 触发时，报告末尾自动追加「模型与责任边界」section，列出本次每个 stage 实际用了什么模型 + 能力等级，并明确划分项目负责 vs 不负责范围
   - 健康跑（无 banner）报告完全干净，不显示责任边界（D5）
 
+**v0.2.3 起，方法论参数被代码锁死，agent 并发自动决定**（M8 methodology lock + agent parallel layer）：
+
+- **methodology lock**：13 个方法论参数（图片下限/上限、chunk 策略、研究预算、checkpoints 等）从 `config.yaml` 移到 `methodology.py` 模块代码常量。用户改 yaml 不再能撤销项目设计决策；保留 `draft.tier` 作为唯一合法的模型质量调档。旧 yaml 文件继续可用（被移除的字段静默忽略）。
+- **agent 并发层**：`extract` 阶段（8 张/批，相互独立）在用 verified multimodal 模型时自动 4 路并发；用未验证模型时退回顺序执行。研究和草稿阶段保持顺序（`research` 是顺序状态机，预留 v0.2.4 重构后再开并发）。
+- **并发参数项目锁**：用户没有 `--parallel` 这种 flag。理由是这是方法论决策（绑定已验证模型的 RPM 上限），不是用户偏好；只暴露选择会让用户用错伤产出。
+- **stage banner 多打一行 `agent: parallel 4` / `agent: sequential (...)`**，让用户实时看到项目替他做了什么决定；最终报告的「模型与责任边界」表格新增「Agent 并发」列。
+
 ## 5 分钟上手
 
 ```bash

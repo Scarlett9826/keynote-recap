@@ -15,9 +15,11 @@ from pathlib import Path
 from rich.console import Console
 from rich.progress import Progress
 
+from .. import methodology as M
 from ..config import Config
 from ..cost_tracker import track
-from ..llm_client import LLMClient
+from ..llm_client import LLMClient, run_parallel
+from ..preflight import check_model_capability
 from ..state import SelectedFrame, State
 from ..util import (
     VisionCapabilityError,
@@ -46,7 +48,19 @@ def run(state: State, cfg: Config) -> State:
 
     client = LLMClient(cfg.llm)
     candidates = state.candidate_frames
-    console.print(f"  Filtering {len(candidates)} candidates in batches of {BATCH_SIZE}")
+
+    # ─── Project-controlled parallelism (v0.2.3) ───
+    # Concurrency is determined by methodology.parallel_for_stage based on
+    # the model tier. Verified multimodal -> up to 4; otherwise -> 1.
+    # User CANNOT override this; see methodology.py docstring for rationale.
+    model_tier = check_model_capability(cfg.llm.models.extract).tier.value
+    parallel = M.parallel_for_stage("extract", model_tier)
+    state.stage_parallelism["extract"] = parallel
+
+    console.print(
+        f"  Filtering {len(candidates)} candidates in batches of {BATCH_SIZE} "
+        f"(parallel: {parallel})"
+    )
 
     transcript = (state.video.transcript or "")[:MAX_TRANSCRIPT_CHARS]
     title = state.video.title or ""
@@ -58,40 +72,58 @@ def run(state: State, cfg: Config) -> State:
     selected: list[SelectedFrame] = []
     rejected: list[dict] = []
 
+    # Pre-compute batches as a list so we can dispatch them in parallel.
+    batches: list[tuple[int, list]] = []
+    for batch_start in range(0, len(candidates), BATCH_SIZE):
+        batch = candidates[batch_start : batch_start + BATCH_SIZE]
+        batches.append((batch_start, batch))
+
+    def _run_batch(item: tuple[int, list]) -> dict:
+        """Process one batch; return a dict so the caller can merge in order.
+
+        Returning data + cost-tracking deferred to the main thread keeps
+        the cost_tracker / state mutations single-threaded (state is a
+        Pydantic model; concurrent .append on its lists is unsafe).
+        """
+        batch_start, batch = item
+        batch_paths = [frames_dir / c.filename for c in batch]
+        user_text = _build_user_text(batch, transcript, title, duration, batch_start)
+
+        try:
+            text, in_t, out_t = client.chat_with_images(
+                model=cfg.llm.models.extract,
+                system=system,
+                user_text=user_text,
+                image_paths=batch_paths,
+                temperature=0.2,
+                max_tokens=4000,
+                json_mode=True,
+            )
+            err = detect_vision_capability_error(text)
+            if err:
+                raise VisionCapabilityError(err)
+            return {
+                "ok": True,
+                "batch": batch,
+                "data": client.parse_json(text),
+                "in_tokens": in_t,
+                "out_tokens": out_t,
+            }
+        except VisionCapabilityError as e:
+            return {"ok": False, "batch": batch, "vision_error": str(e)}
+        except Exception as e:
+            return {"ok": False, "batch": batch, "error": str(e)}
+
     with Progress(transient=True) as progress:
         task = progress.add_task("vision filter", total=len(candidates))
+        results = run_parallel(batches, _run_batch, parallel=parallel)
 
-        for batch_start in range(0, len(candidates), BATCH_SIZE):
-            batch = candidates[batch_start : batch_start + BATCH_SIZE]
-            batch_paths = [frames_dir / c.filename for c in batch]
-
-            user_text = _build_user_text(batch, transcript, title, duration, batch_start)
-
-            try:
-                text, in_t, out_t = client.chat_with_images(
-                    model=cfg.llm.models.extract,
-                    system=system,
-                    user_text=user_text,
-                    image_paths=batch_paths,
-                    temperature=0.2,
-                    max_tokens=4000,
-                    json_mode=True,
-                )
-                track(state, stage="extract", model=cfg.llm.models.extract,
-                      input_tokens=in_t, output_tokens=out_t)
-
-                # Capability probe: fail fast if model can't see images
-                err = detect_vision_capability_error(text)
-                if err:
-                    raise VisionCapabilityError(err)
-
-                data = client.parse_json(text)
-                _merge_batch_result(data, batch, selected, rejected)
-            except VisionCapabilityError as e:
-                # Hard fail: model is non-vision; abort the whole stage
+        for r in results:
+            batch = r["batch"]
+            if r.get("vision_error"):
                 console.print()
                 console.print("[bold red]✗ Stage 3 aborted: model cannot see images[/]")
-                console.print(f"  Model returned: {e}")
+                console.print(f"  Model returned: {r['vision_error']}")
                 console.print()
                 console.print("[bold]How to fix:[/]")
                 console.print(f"  Current model: [cyan]{cfg.llm.models.extract}[/]")
@@ -102,24 +134,30 @@ def run(state: State, cfg: Config) -> State:
                 console.print("  Or set per-stage in config.yaml under llm.models.extract")
                 console.print()
                 console.print("  See README → 'Model Selection' section for the verified list.")
-                raise
-            except Exception as e:
-                console.print(f"    [red]Batch failed: {e}[/]")
-                # Conservative fallback: keep all batch as rejected (they may be retried)
+                raise VisionCapabilityError(r["vision_error"])
+            if not r["ok"]:
+                console.print(f"    [red]Batch failed: {r['error']}[/]")
                 for c in batch:
-                    rejected.append({"filename": c.filename, "rejection_reason": f"batch error: {e}"})
-
+                    rejected.append({
+                        "filename": c.filename,
+                        "rejection_reason": f"batch error: {r['error']}",
+                    })
+                progress.advance(task, advance=len(batch))
+                continue
+            track(state, stage="extract", model=cfg.llm.models.extract,
+                  input_tokens=r["in_tokens"], output_tokens=r["out_tokens"])
+            _merge_batch_result(r["data"], batch, selected, rejected)
             progress.advance(task, advance=len(batch))
 
     # ─── Floor enforcement: rescue pass if LLM was too conservative ───
     # M4 fix: previously we only capped to max; if LLM rejected too aggressively
     # we'd silently produce a 12-image report. Now if we're under the floor,
     # we promote rejected frames back from highest scorer score.
-    if len(selected) < cfg.frame_filter.final_count_min:
-        gap = cfg.frame_filter.final_count_min - len(selected)
+    if len(selected) < M.EXTRACT_FINAL_COUNT_MIN:
+        gap = M.EXTRACT_FINAL_COUNT_MIN - len(selected)
         console.print(
             f"  [yellow]Selected only {len(selected)} (floor: "
-            f"{cfg.frame_filter.final_count_min}); promoting top {gap} "
+            f"{M.EXTRACT_FINAL_COUNT_MIN}); promoting top {gap} "
             f"rejected by scorer score[/]"
         )
         selected_names = {f.filename for f in selected}
@@ -159,9 +197,9 @@ def run(state: State, cfg: Config) -> State:
     selected = _dedupe_by_phash(selected, frames_dir)
 
     # Cap to final_count_max — in case rescue + dedupe still left too many
-    if len(selected) > cfg.frame_filter.final_count_max:
+    if len(selected) > M.EXTRACT_FINAL_COUNT_MAX:
         selected.sort(key=lambda f: (f.info_density + f.relevance), reverse=True)
-        selected = selected[: cfg.frame_filter.final_count_max]
+        selected = selected[: M.EXTRACT_FINAL_COUNT_MAX]
 
     selected.sort(key=lambda f: f.timestamp_s)
 

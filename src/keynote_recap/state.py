@@ -148,6 +148,10 @@ class State(BaseModel):
     runtime_warnings: list[str] = Field(default_factory=list)
     models_used: dict[str, str] = Field(default_factory=dict)
     model_tiers: dict[str, str] = Field(default_factory=dict)
+    # v0.2.3: project-controlled per-stage agent concurrency (1 if not eligible
+    # or model not verified; up to AGENT_PARALLEL_VERIFIED_CAP otherwise).
+    # Surfaced in stage banner and report responsibility section.
+    stage_parallelism: dict[str, int] = Field(default_factory=dict)
 
     # ─── Stage 6: render ───
     report_html_path: str = ""

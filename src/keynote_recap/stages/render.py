@@ -358,8 +358,11 @@ def _build_responsibility_section(state: State) -> str:
     """
     models_used: dict[str, str] = getattr(state, "models_used", {}) or {}
     model_tiers: dict[str, str] = getattr(state, "model_tiers", {}) or {}
+    parallelism: dict[str, int] = getattr(state, "stage_parallelism", {}) or {}
 
-    # Build per-stage model table (only stages that called an LLM)
+    # Build per-stage model table (only stages that called an LLM).
+    # v0.2.3: extra column for agent parallelism so users see what the
+    # project decided based on their model's tier.
     stage_label = {
         "extract":  ("stage 3 extract", "图片筛选 / 视觉理解"),
         "research": ("stage 4 research", "事实查证"),
@@ -371,15 +374,23 @@ def _build_responsibility_section(state: State) -> str:
         model = models_used.get(key, "(未记录)")
         tier_raw = model_tiers.get(key, "unknown")
         tier_zh = _TIER_LABEL_ZH.get(tier_raw, tier_raw)
+        # parallelism column — only "extract" is eligible in v0.2.3
+        if key in parallelism:
+            p = parallelism[key]
+            par_cell = f"并发 {p}" if p > 1 else "顺序"
+        else:
+            par_cell = "—"
         rows.append(
             f"<tr><td><code>{_escape(stage_name)}</code></td>"
             f"<td>{_escape(role)}</td>"
             f"<td><code>{_escape(model)}</code></td>"
-            f"<td>{_escape(tier_zh)}</td></tr>"
+            f"<td>{_escape(tier_zh)}</td>"
+            f"<td>{_escape(par_cell)}</td></tr>"
         )
     table_html = (
         "<table><thead><tr>"
-        "<th>Stage</th><th>职责</th><th>本次实际模型</th><th>能力等级</th>"
+        "<th>Stage</th><th>职责</th><th>本次实际模型</th>"
+        "<th>能力等级</th><th>Agent 并发</th>"
         "</tr></thead><tbody>"
         + "".join(rows)
         + "</tbody></table>"

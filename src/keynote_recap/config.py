@@ -43,9 +43,11 @@ class LLMConfig(BaseModel):
 class SearchConfig(BaseModel):
     provider: Literal["duckduckgo", "tavily", "webfetch_only"] = "duckduckgo"
     api_key_env: str = "TAVILY_API_KEY"     # only used for tavily
-    max_queries: int = 30
-    max_webfetch: int = 50
     timeout_s: int = 15
+    # NOTE (v0.2.3): max_queries / max_webfetch moved to methodology.py
+    # (RESEARCH_MAX_QUERIES / RESEARCH_MAX_WEBFETCH). Lowering them silently
+    # starves the report of citations, raising them wastes API quota — both
+    # are project-design contracts, not user preferences.
 
 
 class VideoConfig(BaseModel):
@@ -56,36 +58,25 @@ class VideoConfig(BaseModel):
 
 
 class StagesConfig(BaseModel):
+    """Pipeline stage range — start/end are user workflow flexibility.
+
+    NOTE (v0.2.3): ``checkpoints`` (the human-review pause points) moved to
+    methodology.py (M.PIPELINE_CHECKPOINTS). The set [3.0, 4.0, 5.5] is part
+    of the project's design contract.
+    """
+
     start: float = 1.0
     end: float = 6.0
-    checkpoints: list[float] = Field(default_factory=lambda: [3.0, 4.0, 5.5])
-
-
-class FrameFilterConfig(BaseModel):
-    """Stage 2 + 3 filter parameters."""
-
-    # Stage 2: PIL frame_scorer 初筛
-    candidate_count: int = 80                # frame_scorer 输出数
-    sample_interval_s: float = 5.0           # 每 N 秒抽 1 帧
-    min_text_density: float = 0.05           # 文本/边缘密度下限
-
-    # Stage 3: vision LLM 精筛
-    final_count_min: int = 30
-    final_count_max: int = 50
-    info_density_min: float = 0.7
-    relevance_min: float = 0.7
 
 
 class DraftConfig(BaseModel):
-    """Stage 5 writing parameters."""
+    """Stage 5 writing tier selection.
 
-    target_lines_min: int = 600
-    target_lines_max: int = 900
-    section_count_min: int = 8
-    section_count_max: int = 14
-    callout_block_min: int = 8                # 整体概要块数
-    callout_block_max: int = 12
-    citation_min: int = 8                     # `> 📎 补充信源` 块最低数
+    NOTE (v0.2.3): All numeric thresholds (target lines, section count,
+    callout count, citation min) moved to methodology.py constants. The
+    only knob that remains here is ``tier`` — the project's sanctioned
+    way to dial difficulty for weaker LLMs without touching methodology.
+    """
 
     # Difficulty tier — selects which 05-draft-write-*.md prompt to load.
     # easy:     fewer forbidden phrases, looser image/citation thresholds.
@@ -96,24 +87,24 @@ class DraftConfig(BaseModel):
     # strict:   tighter constraints (≤ 25 char sentences, ≥ 2 citations
     #           per section). Recommended for claude-opus-4.
     #
-    # Default is "strict" (M5): the report is contract-bound to the
-    # methodology — no forbidden phrases, every chapter must have a
-    # 核心判断, ≥ 2 citations per chapter, etc. The pipeline will retry
-    # draft once if any hard rule fails; if it still fails, a yellow
-    # warning banner is added to the rendered HTML.
-    # If you're using a weaker LLM, pass `--tier easy` (or `--tier standard`)
-    # to relax constraints rather than seeing low-quality output.
+    # Default is "strict" (M5). If you're using a weaker LLM, pass
+    # `--tier easy` (or `--tier standard`) to relax constraints rather
+    # than seeing low-quality output.
     tier: str = "strict"
 
 
 class Config(BaseModel):
-    """Top-level config."""
+    """Top-level config.
+
+    Methodology parameters (chunk count, frame floors, citation min,
+    section count, etc.) live in ``methodology.py`` and are NOT user-tunable.
+    See that module's docstring for rationale.
+    """
 
     llm: LLMConfig = Field(default_factory=LLMConfig)
     search: SearchConfig = Field(default_factory=SearchConfig)
     video: VideoConfig = Field(default_factory=VideoConfig)
     stages: StagesConfig = Field(default_factory=StagesConfig)
-    frame_filter: FrameFilterConfig = Field(default_factory=FrameFilterConfig)
     draft: DraftConfig = Field(default_factory=DraftConfig)
     language: Literal["zh", "en"] = "zh"
     template: Literal["keynote-recap"] = "keynote-recap"  # MVP only
@@ -189,10 +180,21 @@ def load_config(
 
 
 def write_sample_config(path: Path) -> None:
-    """Write a sample config YAML to path."""
+    """Write a sample config YAML to path.
+
+    Only environment / identity / sanctioned-tunable settings are exposed.
+    Methodology parameters (frame floors, citation min, section count, etc.)
+    are locked in src/keynote_recap/methodology.py — see that file's
+    docstring for the rationale.
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
     sample = """# keynote-recap config
 # Full schema docs: https://github.com/Scarlett9826/keynote-recap/blob/main/docs/configuration.md
+#
+# Methodology parameters (chunk count, frame floors, citation min, section
+# count, agent concurrency, etc.) are NOT here — they live in
+# src/keynote_recap/methodology.py as locked constants. Modifying them is
+# a code change, not a config tweak. See that file for rationale.
 
 llm:
   provider: openai-compatible
@@ -209,9 +211,7 @@ llm:
 
 search:
   provider: duckduckgo               # duckduckgo | tavily | webfetch_only
-  max_queries: 30
-  max_webfetch: 50
-  timeout_s: 15
+  timeout_s: 15                       # network-environment knob; OK to tune
 
 video:
   resolution: 1080p60
@@ -220,24 +220,13 @@ video:
   languages: [zh-Hans, zh, en]
 
 stages:
-  start: 1.0
-  end: 6.0
-  checkpoints: [3.0, 4.0, 5.5]      # human review pause points
-
-frame_filter:
-  candidate_count: 80
-  sample_interval_s: 5.0
-  final_count_min: 30
-  final_count_max: 50
+  start: 1.0                          # which stage to start from (workflow flag)
+  end: 6.0                            # which stage to end at
 
 draft:
-  target_lines_min: 600
-  target_lines_max: 900
-  section_count_min: 8
-  section_count_max: 14
-  callout_block_min: 8
-  callout_block_max: 12
-  citation_min: 8
+  tier: strict                        # strict | standard | easy
+                                      # Sanctioned way to dial difficulty for
+                                      # weaker LLMs. See draft.tier docstring.
 
 language: zh                         # zh | en
 template: keynote-recap              # MVP only supports keynote-recap

@@ -2,19 +2,27 @@
 
 Supports text, vision (images), and JSON-mode. Uses tenacity for retries.
 Returns (text, input_tokens, output_tokens) so cost_tracker can record.
+
+v0.2.3: adds ``chat_batch`` for project-controlled parallel calls. The
+concurrency level is set by ``methodology.parallel_for_stage`` based on
+the stage's model tier — users do not get to override it.
 """
 from __future__ import annotations
 
 import base64
 import json
 import os
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable, TypeVar
 
 from openai import OpenAI
 from tenacity import retry, stop_after_attempt, wait_exponential
 
 from .config import LLMConfig
+
+T = TypeVar("T")
+R = TypeVar("R")
 
 
 class LLMClient:
@@ -130,3 +138,34 @@ class LLMClient:
                 lines = lines[:-1]
             t = "\n".join(lines)
         return json.loads(t)
+
+
+def run_parallel(
+    items: list[T],
+    work: Callable[[T], R],
+    *,
+    parallel: int,
+) -> list[R]:
+    """Run ``work(item)`` for each item with bounded concurrency.
+
+    Order of returned results matches order of ``items``. Concurrency is
+    project-controlled (see ``methodology.parallel_for_stage``); users
+    cannot override it.
+
+    A ``parallel=1`` value forces sequential execution (no thread pool
+    overhead, identical semantics to a plain for-loop) — this is the
+    default for unverified models so behavior matches v0.2.2.
+
+    Exceptions in ``work`` propagate to the caller; partial results are
+    NOT silently dropped (caller decides whether to retry vs. abort).
+    """
+    if parallel <= 1 or len(items) <= 1:
+        return [work(it) for it in items]
+
+    results: list[R] = [None] * len(items)  # type: ignore[list-item]
+    with ThreadPoolExecutor(max_workers=parallel) as pool:
+        futures = {pool.submit(work, it): i for i, it in enumerate(items)}
+        for fut in futures:
+            idx = futures[fut]
+            results[idx] = fut.result()
+    return results

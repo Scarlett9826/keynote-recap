@@ -15,6 +15,7 @@ from pathlib import Path
 from rich.console import Console
 from rich.progress import Progress
 
+from .. import methodology as M
 from ..config import Config
 from ..frame_scorer import score_image
 from ..state import FrameCandidate, State
@@ -35,7 +36,7 @@ def run(state: State, cfg: Config) -> State:
     console.print("[bold]Stage 2 — segment + frame_scorer[/]")
 
     duration_s = state.video.duration_s
-    interval = cfg.frame_filter.sample_interval_s
+    interval = M.SEGMENT_SAMPLE_INTERVAL_S
     n_samples = int(duration_s / interval)
 
     # Cap samples to a reasonable upper bound (3000) to avoid disk blow-up
@@ -81,13 +82,13 @@ def run(state: State, cfg: Config) -> State:
     # scores are uniformly low. To prevent topic dropouts, we split the
     # video into N time chunks and reserve a per-chunk minimum even if the
     # absolute score is below the global cutoff.
-    target_count = cfg.frame_filter.candidate_count
+    target_count = M.SEGMENT_CANDIDATE_COUNT
     top_n = _topn_with_chunk_floor(
         scored=scored,
         duration_s=duration_s,
         target_count=target_count,
-        chunk_count=12,                 # 12 chunks ≈ 5-min slices for a 60-min keynote
-        per_chunk_min=3,                # at least 3 frames per chunk
+        chunk_count=M.SEGMENT_CHUNK_COUNT,
+        per_chunk_min=M.SEGMENT_CHUNK_FLOOR,
     )
 
     # 5. build FrameCandidate list

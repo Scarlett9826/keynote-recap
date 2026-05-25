@@ -1489,3 +1489,134 @@ def test_e2e_healthy_recap_passes_all_gates():
     s.image_mix_passed = mix["all_pass"]
     s.topic_coverage_passed = cov["all_pass"]
     assert _collect_extract_failures(s) == []
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# v0.2.3: methodology lock + agent parallel layer
+# ──────────────────────────────────────────────────────────────────────────────
+def test_v023_methodology_module_exposes_locked_constants():
+    """All 13 methodology constants must exist + agent parallel layer."""
+    from keynote_recap import methodology as M
+    # Frame extract floor / ceiling (replaces user-tunable knobs)
+    assert M.EXTRACT_FINAL_COUNT_MIN == 30
+    assert M.EXTRACT_FINAL_COUNT_MAX == 50
+    # Segment-stage chunk policy
+    assert M.SEGMENT_CHUNK_COUNT > 0
+    assert M.SEGMENT_CHUNK_FLOOR > 0
+    # Research caps
+    assert M.RESEARCH_MAX_QUERIES > 0
+    assert M.RESEARCH_MAX_WEBFETCH > 0
+    # Pipeline checkpoints (lock the 7-stage commitment)
+    assert isinstance(M.PIPELINE_CHECKPOINTS, tuple)
+    assert len(M.PIPELINE_CHECKPOINTS) >= 1
+    # Agent parallelism layer
+    assert M.AGENT_PARALLEL_DEFAULT == 1
+    assert M.AGENT_PARALLEL_VERIFIED_CAP == 4
+    # research excluded in v0.2.3 (state machine, see methodology.py)
+    assert "extract" in M.AGENT_PARALLEL_ELIGIBLE_STAGES
+    assert "research" not in M.AGENT_PARALLEL_ELIGIBLE_STAGES
+
+
+def test_v023_parallel_for_stage_three_tier_logic():
+    """parallel_for_stage gates concurrency on (stage, tier)."""
+    from keynote_recap import methodology as M
+    # eligible stage + verified -> cap
+    assert M.parallel_for_stage("extract", "verified_multimodal") == M.AGENT_PARALLEL_VERIFIED_CAP
+    # eligible stage but unverified -> 1 (safe default)
+    assert M.parallel_for_stage("extract", "unknown") == 1
+    assert M.parallel_for_stage("extract", "known_text_only") == 1
+    # ineligible stage stays sequential regardless of tier
+    assert M.parallel_for_stage("draft", "verified_multimodal") == 1
+    assert M.parallel_for_stage("research", "verified_multimodal") == 1
+    assert M.parallel_for_stage("verify", "verified_multimodal") == 1
+
+
+def test_v023_run_parallel_preserves_order():
+    """run_parallel must return results in same order as input items."""
+    from keynote_recap.llm_client import run_parallel
+    items = list(range(20))
+    # Sleep based on value to encourage out-of-order completion
+    import time
+    def work(x: int) -> int:
+        time.sleep(0.01 * (20 - x))  # later items finish first
+        return x * 2
+    results = run_parallel(items, work, parallel=4)
+    assert results == [x * 2 for x in items]
+
+
+def test_v023_run_parallel_sequential_when_parallel_one():
+    """parallel=1 -> plain for-loop, no thread pool overhead."""
+    from keynote_recap.llm_client import run_parallel
+    calls: list[int] = []
+    def work(x: int) -> int:
+        calls.append(x)
+        return x
+    results = run_parallel([1, 2, 3], work, parallel=1)
+    assert results == [1, 2, 3]
+    assert calls == [1, 2, 3]  # strictly sequential order
+
+
+def test_v023_run_parallel_propagates_exceptions():
+    """Exceptions in worker propagate; partial results are NOT silently dropped."""
+    from keynote_recap.llm_client import run_parallel
+    def work(x: int) -> int:
+        if x == 2:
+            raise ValueError("boom")
+        return x
+    import pytest
+    with pytest.raises(ValueError, match="boom"):
+        run_parallel([1, 2, 3, 4], work, parallel=2)
+
+
+def test_v023_state_has_stage_parallelism_field():
+    """State must record per-stage parallel decisions for report rendering."""
+    from keynote_recap.state import State
+    s = State(url="https://example.com/v", output_dir="/tmp/x")
+    assert hasattr(s, "stage_parallelism")
+    assert s.stage_parallelism == {}
+    s.stage_parallelism["extract"] = 4
+    assert s.stage_parallelism["extract"] == 4
+
+
+def test_v023_config_no_longer_has_methodology_knobs():
+    """Removed user-tunable methodology knobs must NOT appear in Config."""
+    from keynote_recap.config import Config, DraftConfig, SearchConfig, StagesConfig
+    # DraftConfig should have only `tier` (sanctioned model-quality lever)
+    draft_fields = set(DraftConfig.model_fields.keys())
+    # min/max image counts no longer tunable
+    assert "min_images" not in draft_fields
+    assert "max_images" not in draft_fields
+    # tier remains
+    assert "tier" in draft_fields
+    # SearchConfig: max_queries / max_webfetch removed
+    search_fields = set(SearchConfig.model_fields.keys())
+    assert "max_queries" not in search_fields
+    assert "max_webfetch" not in search_fields
+    # StagesConfig: checkpoints removed
+    stages_fields = set(StagesConfig.model_fields.keys())
+    assert "checkpoints" not in stages_fields
+    # FrameFilterConfig should not even exist as an attribute on Config
+    cfg_fields = set(Config.model_fields.keys())
+    assert "frame_filter" not in cfg_fields
+
+
+def test_v023_yaml_template_does_not_emit_locked_keys():
+    """write_sample_config output must not advertise methodology-locked keys."""
+    from keynote_recap.config import write_sample_config
+    import tempfile
+    with tempfile.NamedTemporaryFile("w", suffix=".yaml", delete=False) as f:
+        path = Path(f.name)
+    try:
+        write_sample_config(path)
+        body = path.read_text()
+        # Locked methodology keys must NOT be templated
+        assert "max_queries" not in body
+        assert "max_webfetch" not in body
+        assert "min_images" not in body
+        assert "max_images" not in body
+        assert "checkpoints" not in body
+        assert "frame_filter" not in body
+        # Sanctioned knobs SHOULD still be there
+        assert "tier" in body  # draft.tier survives
+    finally:
+        path.unlink(missing_ok=True)

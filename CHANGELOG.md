@@ -4,6 +4,96 @@ All notable changes to **keynote-recap** are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.3] — M8 methodology lock + agent parallel layer (2026-05-25)
+
+Two structural changes that protect output quality without expanding
+surface area: (1) thirteen methodology parameters are now hard-coded in
+a single `methodology` module so users cannot accidentally undo design
+decisions through `config.yaml`, and (2) a project-controlled
+concurrency layer that opportunistically parallelizes safe stages when
+the model is verified.
+
+### What changed
+
+**M8.1. Methodology module (`methodology.py`, new)**
+
+A single source of truth for parameters that are *design decisions*,
+not user preferences. Replaces fields scattered across `config.py`:
+
+- `EXTRACT_FINAL_COUNT_MIN` / `EXTRACT_FINAL_COUNT_MAX` — frame floor/ceiling
+- `SEGMENT_CHUNK_COUNT` / `SEGMENT_CHUNK_FLOOR` — chunk policy
+- `RESEARCH_MAX_QUERIES` / `RESEARCH_MAX_WEBFETCH` — fact-check budgets
+- `DRAFT_*` minimum-quality thresholds
+- `PIPELINE_CHECKPOINTS` — the 7-stage commitment
+
+Stages now read `M.X` instead of `cfg.X`. Users cannot tune these via
+yaml or CLI; the only sanctioned model-quality lever remains
+`draft.tier`.
+
+**M8.2. Config slimming (`config.py`)**
+
+Removed (fields ignored if found in old yaml):
+- `frame_filter` (entire section)
+- `draft.min_images` / `draft.max_images` (kept `draft.tier`)
+- `stages.checkpoints`
+- `search.max_queries` / `search.max_webfetch`
+
+`write_sample_config` yaml template synced — only sanctioned-tunable
+keys remain.
+
+**M8.3. Agent parallel layer (`methodology.py`, `llm_client.py`)**
+
+New `run_parallel(items, work, *, parallel)` helper using
+`ThreadPoolExecutor` with order-preserving results. Concurrency is
+project-controlled via `parallel_for_stage(stage, model_tier)`:
+
+- Verified multimodal model + eligible stage → 4 concurrent calls
+- Any other tier OR ineligible stage → 1 (sequential)
+
+In v0.2.3 only the `extract` stage is eligible (8-frame batches are
+trivially independent). `research` is intentionally NOT eligible —
+its `fetch_count` budget and citation-balance heuristic are a sequential
+state machine; parallelization is planned for v0.2.4 with a
+fetch-then-decide refactor.
+
+Users cannot override concurrency. No `--parallel` flag, no yaml field.
+Rationale: it's a methodology decision tied to verified-model RPM
+limits, not a user preference.
+
+**M8.4. Surfaced in banner + report**
+
+- Stage banner now shows an `agent: parallel 4` or
+  `agent: sequential (model tier 'unknown' not eligible)` line so
+  users can see what decision the project made for them.
+- Responsibility-section table in the final report adds an
+  "Agent 并发" column listing the per-stage decision.
+- `state.stage_parallelism: dict[str, int]` records decisions for
+  rendering and debugging.
+
+### Migration
+
+No action required. Old yaml files keep working; ignored fields are
+silently dropped. To regenerate a clean template:
+
+```bash
+keynote-recap doctor --write-config ./config.yaml
+```
+
+### Tests
+
+96 tests passing (+8). New coverage:
+
+- All 13 methodology constants exposed
+- `parallel_for_stage` three-tier logic (verified / unverified /
+  ineligible-stage)
+- `run_parallel` order preservation, sequential-when-1, exception
+  propagation
+- `state.stage_parallelism` field exists
+- Removed config knobs no longer in `Config.model_fields`
+- yaml template emits no methodology-locked keys
+
+---
+
 ## [0.2.2] — M7 expectation management (2026-05-25)
 
 Focused fix for "user can't tell project-design problems apart from

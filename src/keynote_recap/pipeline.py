@@ -19,6 +19,7 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.prompt import Confirm
 
+from . import methodology as M
 from .config import Config
 from .cost_tracker import format_summary
 from .preflight import ModelTier, check_model_capability
@@ -97,10 +98,26 @@ def _print_stage_banner(stage_name: str, num: float, config: Config, state: Stat
         state.models_used[stage_name] = model_name
         state.model_tiers[stage_name] = check.tier.value
         model_line = f"model:  [cyan]{model_name}[/]  ({tier_label})"
+
+        # v0.2.3: project-controlled agent parallelism. Inferred from model
+        # tier; user cannot override. Shows in banner so users see what
+        # decision the project made for them.
+        parallel = M.parallel_for_stage(stage_name, check.tier.value)
+        if stage_name in M.AGENT_PARALLEL_ELIGIBLE_STAGES:
+            if parallel > 1:
+                parallel_line = f"\nagent:  parallel {parallel} (auto — verified model)"
+            else:
+                parallel_line = (
+                    f"\nagent:  sequential (model tier '{check.tier.value}' "
+                    f"not eligible for parallelism)"
+                )
+        else:
+            parallel_line = ""
     else:
         model_line = "model:  [dim](no LLM call)[/]"
+        parallel_line = ""
 
-    body = f"{model_line}\ntask:   {task}\nguards: {guards}"
+    body = f"{model_line}{parallel_line}\ntask:   {task}\nguards: {guards}"
     console.print(Panel(body, title=f"stage {num} / {stage_name}", expand=False))
 
 
@@ -337,8 +354,8 @@ def run_pipeline(
                 console.print("[green]✓ Quality gate passed[/]\n")
             state.save()
 
-        # Checkpoint pause
-        if checkpoint and num in config.stages.checkpoints and num < end_stage:
+        # Checkpoint pause (M.PIPELINE_CHECKPOINTS — methodology-locked)
+        if checkpoint and num in M.PIPELINE_CHECKPOINTS and num < end_stage:
             console.print(f"\n[yellow]Checkpoint after stage {num}.[/]")
             console.print(f"  Output dir: {output_dir}")
             console.print(f"  State:      {state_path}")

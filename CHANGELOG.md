@@ -4,6 +4,43 @@ All notable changes to **keynote-recap** are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.5.1] — Hotfix: api_key check is advisory, not blocking (2026-05-25)
+
+### Fixed
+
+- **`preflight_env.check_api_key` severity downgraded from `blocker` to
+  `warning`.** v0.2.5 silently upgraded "API key env var unset" to a hard
+  abort (un-declared BREAKING) which broke workflows where the LLM SDK
+  reaches its endpoint via a non-standard env var — corporate gateways,
+  agent-host injected proxies (e.g. opencode routing `claude-sonnet-4-6`
+  through an internal endpoint without populating the calling shell's
+  `OPENAI_API_KEY`). The recap pipeline aborted at preflight rather than
+  letting stage 1 (download) start. Restored to the v0.2.4 behaviour:
+  unset key prints a yellow `⚠` warning and the run continues; the first
+  LLM call surfaces a real 401 from the provider when the key is
+  actually invalid. Model-capability checks (`_preflight_models`) remain
+  hard aborts — text-only models on vision stages still silently produce
+  garbage and that signal is worth preserving.
+
+### Tests
+
+- `test_preflight_env_api_key_check_unset` updated: asserts
+  `severity == "warning"` (was `"blocker"` in v0.2.5).
+- New `test_v0251_preflight_env_does_not_abort_when_only_api_key_missing`:
+  end-to-end assertion that `cli._preflight_env` returns a warnings list
+  (not `None`) when `OPENAI_API_KEY` is unset and every tool check
+  passes. This regression test guards against re-introducing the v0.2.5
+  abort path.
+
+### Acknowledged limitations
+
+- This hotfix does not solve "agent runs in an env where the LLM gateway
+  isn't an OpenAI-compatible endpoint at all". For that, the user still
+  needs to point `llm.base_url` and `llm.api_key_env` at a reachable
+  endpoint via `~/.config/keynote-recap/config.yaml` (or shell env). The
+  fix only restores the v0.2.4 contract that preflight does not gate on
+  the literal presence of the env var.
+
 ## [0.2.5] — Internalized defense layer (2026-05-25)
 
 The threat model assumed by v0.2.4 M9 was "agent calls `keynote-recap

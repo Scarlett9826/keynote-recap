@@ -747,15 +747,48 @@ def test_preflight_env_ffmpeg_check_handles_missing(monkeypatch):
 
 
 def test_preflight_env_api_key_check_unset(monkeypatch):
-    """Empty API key env var returns blocker with a clear fix command."""
+    """v0.2.5.1 hotfix: unset API key is a *warning*, not a blocker.
+
+    Rationale: many environments (corporate gateways, agent-host injected
+    proxies) reach the LLM endpoint without OPENAI_API_KEY being literally
+    set in the calling shell. Pre-flighting only catches "the variable is
+    literally unset", which is advisory-grade. The proper place for "the
+    key is actually wrong" is the first LLM call (401 with provider
+    message). v0.2.5 silently upgraded this to a blocker (un-declared
+    BREAKING) which broke those workflows.
+    """
     from keynote_recap.preflight_env import check_api_key
 
     monkeypatch.delenv("FAKE_KEY", raising=False)
     r = check_api_key("FAKE_KEY")
     assert r.ok is False
-    assert r.severity == "blocker"
+    assert r.severity == "warning"  # v0.2.5.1 — was "blocker" in v0.2.5
     assert "FAKE_KEY" in r.detail
     assert "export FAKE_KEY=" in r.fix
+
+
+def test_v0251_preflight_env_does_not_abort_when_only_api_key_missing(
+    tmp_path, monkeypatch
+):
+    """Regression for v0.2.5 hard-abort bug.
+
+    cli._preflight_env must return a (possibly non-empty) warnings list,
+    NOT None, when the only failing check is the API key. Returning None
+    means the recap command sys.exit(2)s before stage 1.
+    """
+    from keynote_recap.cli import _preflight_env
+    from keynote_recap.config import load_config
+
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    cfg = load_config()
+    result = _preflight_env(cfg, tmp_path)
+    assert result is not None, (
+        "v0.2.5 regression: _preflight_env aborted when only api_key was "
+        "missing. v0.2.5.1 must let the run continue (warning, not blocker)."
+    )
+    assert any("api_key" in w for w in result), (
+        "Expected api_key warning to surface in warnings list."
+    )
 
 
 def test_preflight_env_api_key_check_set(monkeypatch):

@@ -185,15 +185,25 @@ def check_api_key(env_var_name: str) -> EnvCheck:
 
     Real validity check happens on first LLM call; doing it here would burn
     tokens and slow down every run.
+
+    v0.2.5.1 hotfix: severity is ``warning``, not ``blocker``. v0.2.5
+    silently upgraded this to ``blocker`` (un-declared BREAKING) which broke
+    workflows where the LLM endpoint is reached via a non-standard env var
+    (corporate gateways, agent-host injected proxies, etc.). The proper
+    place for "the key is actually wrong" is the first LLM call — it
+    surfaces a 401 there with a clear provider message. Pre-flighting only
+    catches "the variable is literally unset", which is advisory-grade.
     """
     val = os.environ.get(env_var_name, "").strip()
     if not val:
         return EnvCheck(
             ok=False,
             what="api_key",
-            detail=f"${env_var_name} is not set — every LLM stage will fail.",
+            detail=f"${env_var_name} is not set — LLM stages will fail "
+                   "with 401 unless the SDK reads the key from another "
+                   "source (e.g. an agent-host proxy).",
             fix=f"export {env_var_name}=<your-api-key>",
-            severity="blocker",
+            severity="warning",
         )
     # Light sanity: most keys are >= 20 chars
     if len(val) < 20:

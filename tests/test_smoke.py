@@ -2008,3 +2008,208 @@ def test_v0241_subtitle_returns_empty_when_both_attempts_fail(tmp_path, monkeypa
     assert path == ""
     assert lang == ""
     assert len(calls) == 2  # tried both
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# v0.2.5 — internalized defense layer (banner + verify + recap-and-verify)
+# ──────────────────────────────────────────────────────────────────────────────
+def test_v025_verify_html_with_valid_frontmatter_returns_ok():
+    """A complete v0.2.5 HTML (generator + sha meta + banner + stamp) verifies OK."""
+    from keynote_recap.verify import verify_html_text
+
+    sha = "a" * 64
+    html = (
+        '<!doctype html><html><head>'
+        '<meta name="generator" content="keynote-recap 0.2.5">'
+        f'<meta name="content-sha256" content="{sha}">'
+        '</head><body>'
+        '<div class="recap-banner"><div class="recap-banner-body">'
+        'keynote-recap v0.2.5 · sha:aaaaaaaa · model:claude · stages:6/6 · verified ✓'
+        '</div></div>'
+        '<h1>Body</h1>'
+        '<div class="recap-stamp">v0.2.5 · sha:aaaaaaaa · 模型:claude</div>'
+        '</body></html>'
+    )
+    result = verify_html_text(html)
+    assert result.ok is True
+    assert result.summary.startswith("OK:")
+    assert "keynote-recap v0.2.5" in result.summary
+    assert "sha:" in result.summary
+
+
+def test_v025_verify_html_with_tampered_body_returns_fail(tmp_path):
+    """verify_md_text catches body-edit tamper via content-sha256 mismatch."""
+    from keynote_recap.frontmatter import attach_frontmatter
+    from keynote_recap.verify import verify_md_text
+
+    composed = attach_frontmatter(
+        {
+            "keynote-recap-version": "0.2.5",
+            "model-extract": "claude-opus-4",
+        },
+        "# Title\n\nOriginal body.\n",
+    )
+    tampered = composed + "X"  # append byte → body sha drifts
+    result = verify_md_text(tampered)
+    assert result.ok is False
+    summary_lower = result.summary.lower()
+    assert ("sha mismatch" in summary_lower) or ("content-sha256 mismatch" in summary_lower)
+    assert "body has been edited" in summary_lower
+
+
+def test_v025_verify_html_without_generator_meta_returns_fail():
+    """HTML lacking <meta name="generator"> fails the very first check."""
+    from keynote_recap.verify import verify_html_text
+
+    html = "<html><body>fake</body></html>"
+    result = verify_html_text(html)
+    assert result.ok is False
+    summary_lower = result.summary.lower()
+    assert "missing" in summary_lower
+    assert "generator" in summary_lower
+
+
+def test_v025_verify_html_without_recap_banner_returns_fail():
+    """Pre-v0.2.5 HTML (stamp present but no banner) fails with friendly message."""
+    from keynote_recap.verify import verify_html_text
+
+    sha = "b" * 64
+    html = (
+        '<!doctype html><html><head>'
+        '<meta name="generator" content="keynote-recap 0.2.4">'
+        f'<meta name="content-sha256" content="{sha}">'
+        '</head><body>'
+        '<h1>Body</h1>'
+        '<div class="recap-stamp">v0.2.4 · sha:bbbbbbbb · 模型:claude</div>'
+        '</body></html>'
+    )
+    result = verify_html_text(html)
+    assert result.ok is False
+    summary_lower = result.summary.lower()
+    assert ("pre-v0.2.5" in summary_lower) or ("banner" in summary_lower)
+
+
+def test_v025_verify_md_with_valid_frontmatter_returns_ok():
+    """Markdown produced by attach_frontmatter verifies OK."""
+    from keynote_recap.frontmatter import attach_frontmatter
+    from keynote_recap.verify import verify_md_text
+
+    md = attach_frontmatter(
+        {
+            "keynote-recap-version": "0.2.5",
+            "model-extract": "claude-opus-4",
+        },
+        "# hello\nbody\n",
+    )
+    result = verify_md_text(md)
+    assert result.ok is True
+    assert result.summary.startswith("OK:")
+
+
+def test_v025_verify_md_without_frontmatter_returns_fail():
+    """Plain markdown without frontmatter is not a keynote-recap report."""
+    from keynote_recap.verify import verify_md_text
+
+    md = "# hello\njust a markdown\n"
+    result = verify_md_text(md)
+    assert result.ok is False
+    summary_lower = result.summary.lower()
+    assert ("no frontmatter" in summary_lower) or ("not a keynote-recap" in summary_lower)
+
+
+def test_v025_verify_nonexistent_file_returns_fail():
+    """verify_file on a missing path returns a clear FAIL."""
+    from pathlib import Path
+
+    from keynote_recap.verify import verify_file
+
+    result = verify_file(Path("/nonexistent/path/foo.html"))
+    assert result.ok is False
+    assert "does not exist" in result.summary
+
+
+def test_v025_render_writes_banner_at_body_top(tmp_path):
+    """v0.2.5: top banner is rendered immediately after <body>, before main content."""
+    from keynote_recap.frontmatter import attach_frontmatter, parse_frontmatter
+    from keynote_recap.stages.render import render_report_md_to_html
+
+    body = "# Real Title\n\nSome content paragraph.\n"
+    composed = attach_frontmatter(
+        {
+            "keynote-recap-version": "0.2.5",
+            "model-extract": "claude-opus-4",
+            "stages-completed": ["1", "2", "3", "4", "5", "5.5"],
+            "stages-skipped": [],
+        },
+        body,
+    )
+    md_path = tmp_path / "report.md"
+    md_path.write_text(composed)
+    html_path = tmp_path / "report.html"
+
+    meta, _ = parse_frontmatter(composed)
+    render_report_md_to_html(md_path, html_path, meta)
+
+    html = html_path.read_text()
+
+    # 1. banner present
+    assert 'class="recap-banner"' in html
+    # 2. v0.2.4 stamp still present (redundant defence)
+    assert 'class="recap-stamp"' in html
+    # 3. banner text reflects healthy path
+    assert "keynote-recap v0.2.5" in html
+    assert "verified ✓" in html
+
+    # 4. positional check: banner must appear after <body> and before the
+    #    rendered main content (the first <h1>)
+    body_idx = html.index("<body>")
+    banner_idx = html.index('class="recap-banner"')
+    h1_idx = html.index("<h1>")
+    assert body_idx < banner_idx < h1_idx
+
+
+def test_v025_verify_cli_exits_0_for_valid_md(tmp_path):
+    """`keynote-recap verify <valid.md>` prints OK and exits 0."""
+    from click.testing import CliRunner
+
+    from keynote_recap.cli import main
+    from keynote_recap.frontmatter import attach_frontmatter
+
+    md = attach_frontmatter(
+        {
+            "keynote-recap-version": "0.2.5",
+            "model-extract": "claude-opus-4",
+        },
+        "# hello\nbody\n",
+    )
+    md_path = tmp_path / "report.md"
+    md_path.write_text(md)
+
+    runner = CliRunner()
+    result = runner.invoke(main, ["verify", str(md_path)])
+    assert result.exit_code == 0, result.output
+    assert "OK:" in result.output
+
+
+def test_v025_verify_cli_exits_1_for_tampered_md(tmp_path):
+    """`keynote-recap verify <tampered.md>` prints FAIL and exits 1."""
+    from click.testing import CliRunner
+
+    from keynote_recap.cli import main
+    from keynote_recap.frontmatter import attach_frontmatter
+
+    md = attach_frontmatter(
+        {
+            "keynote-recap-version": "0.2.5",
+            "model-extract": "claude-opus-4",
+        },
+        "# hello\nbody\n",
+    )
+    tampered = md + "X"  # body byte drift → sha mismatch
+    md_path = tmp_path / "report.md"
+    md_path.write_text(tampered)
+
+    runner = CliRunner()
+    result = runner.invoke(main, ["verify", str(md_path)])
+    assert result.exit_code == 1, result.output
+    assert "FAIL" in result.output

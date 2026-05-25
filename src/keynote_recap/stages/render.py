@@ -176,6 +176,42 @@ tr:nth-child(even) { background: var(--table-stripe); }
 .responsibility table { font-size: 13px; }
 .responsibility code { font-size: 12px; }
 
+/* v0.2.5 (L2): top sticky banner — primary forensic visual signature.
+   Sticky to top; non-removable; aggressive project-orange to maximize
+   visual delta vs. hand-crafted impostor HTML. Color modulates by run
+   integrity (orange / yellow / red) reading from frontmatter
+   stages-skipped list. */
+.recap-banner {
+    position: sticky;
+    top: 0;
+    z-index: 9999;
+    margin: 0 -40px 24px;  /* counter body padding to span full width */
+    padding: 0;
+    border-top: 6px solid #ff6900;
+    background: #fff7ed;
+    color: #7c2d12;
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+    font-size: 14px;
+    line-height: 1.4;
+}
+.recap-banner-body {
+    padding: 12px 40px;
+    text-align: center;
+}
+.recap-banner-half-run {
+    border-top-color: #d99100;
+    background: #fff8e6;
+    color: #5c4500;
+}
+.recap-banner-unverified {
+    border-top-color: #cf222e;
+    background: #fff0f0;
+    color: #5b0c14;
+}
+@media print {
+    .recap-banner { position: static; }
+}
+
 /* v0.2.4 (M9.7): provenance stamp — verifiable visual signature.
    Position fixed bottom-right so downstream readers can identify a
    keynote-recap-produced HTML at a glance. Subtle, non-distracting. */
@@ -310,6 +346,8 @@ def _write_html(
         f'</div>'
     )
 
+    top_banner_html = _build_top_banner(frontmatter_meta)
+
     html_full = f"""<!doctype html>
 <html lang="zh-CN">
 <head>
@@ -319,6 +357,7 @@ def _write_html(
 {CSS}
 </head>
 <body>
+{top_banner_html}
 {banner_html}{html_body}{responsibility_html}
 {stamp_html}
 </body>
@@ -334,6 +373,69 @@ def _escape(s: str) -> str:
          .replace("<", "&lt;")
          .replace(">", "&gt;")
          .replace('"', "&quot;")
+    )
+
+
+def _build_top_banner(frontmatter_meta: dict) -> str:
+    """v0.2.5 (L2): inject sticky top banner — primary forensic visual signature.
+
+    Reads from frontmatter:
+      keynote-recap-version, content-sha256, model-extract,
+      stages-completed, stages-skipped
+
+    Color modulates by integrity:
+      - orange (default) — healthy: no skipped stages
+      - yellow           — half-run: some stages skipped but stage 5 ran
+      - red              — unverified: stage 1 (transcript) or stage 4 (research) skipped
+
+    Non-cooperative: no JavaScript, no close button. A removable banner
+    is a forgeable banner.
+    """
+    version = frontmatter_meta.get("keynote-recap-version", "?")
+    full_sha = frontmatter_meta.get("content-sha256", "")
+    sha8 = full_sha[:8] if full_sha else "unsigned"
+    model = frontmatter_meta.get("model-extract", "?")
+
+    completed = frontmatter_meta.get("stages-completed") or []
+    skipped = frontmatter_meta.get("stages-skipped") or []
+    n_done = len(completed) if isinstance(completed, list) else 0
+
+    # Tolerant membership check — frontmatter may parse stage numbers
+    # as int, float, or str depending on emitter
+    def _in_skipped(stage_num: int) -> bool:
+        for v in skipped:
+            try:
+                if float(v) == float(stage_num):
+                    return True
+            except (TypeError, ValueError):
+                if str(v) in (str(stage_num), str(float(stage_num))):
+                    return True
+        return False
+
+    unverified = _in_skipped(1) or _in_skipped(4)
+    half_run = bool(skipped) and not unverified
+
+    if unverified:
+        cls = "recap-banner recap-banner-unverified"
+        suffix = "✗ unverified"
+    elif half_run:
+        cls = "recap-banner recap-banner-half-run"
+        suffix = "⚠ partial"
+    else:
+        cls = "recap-banner"
+        suffix = "verified ✓"
+
+    text = (
+        f"keynote-recap v{_escape(str(version))} · "
+        f"sha:{_escape(str(sha8))} · "
+        f"model:{_escape(str(model))} · "
+        f"stages:{n_done}/6 · "
+        f"{suffix}"
+    )
+    return (
+        f'<div class="{cls}">'
+        f'<div class="recap-banner-body">{text}</div>'
+        f'</div>'
     )
 
 

@@ -4,6 +4,149 @@ All notable changes to **keynote-recap** are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.5] — Internalized defense layer (2026-05-25)
+
+The threat model assumed by v0.2.4 M9 was "agent calls `keynote-recap
+recap` but cuts corners inside the pipeline" — text-only models, skipped
+stages, post-hoc edits to `report.md`. A real-world session on
+2026-05-25 (opencode + sonnet 4.6) demonstrated a deeper failure mode
+M9 does not cover: the agent **never invoked `keynote-recap` at all**.
+It read `methodology/*.md` as a writing checklist, then hand-wrote a
+4.8 MB HTML "report" — no `<meta name="generator">`, no
+`content-sha256`, no `.recap-stamp`, arbitrary file path on Desktop,
+forbidden 📌 emoji, headings as `## 1、` instead of `## 一、`. M9
+detected nothing because M9 only runs when the project runs.
+
+v0.2.5 internalizes defense into the project itself, on the principle
+that **the primary defense layer must work even when the agent ignores
+all project documentation**. Three layers: a hard-core directive
+`AGENTS.md` (cooperative-agent channel, best-effort), a sticky orange
+top banner injected into every real `report.html` (forensic visual
+delta, primary defense), and a `verify` subcommand that returns binary
+OK / FAIL on any HTML or markdown (validation channel, deterministic).
+A `recap-and-verify` wrapper is mandated as the single canonical
+agent-facing command so non-compliance becomes a one-line `verify`
+check away from being detected.
+
+### Added
+
+- **`AGENTS.md`** (project root, new file). Hard-core directive style
+  agent guide read by default by opencode / Cursor / Claude Code.
+  Four sections: (1) "Are you in the right place?" yes/no for agents
+  considering integration; (2) "The one rule" — call
+  `keynote-recap recap-and-verify`, do not improvise; (3) "How to
+  actually run it" — concrete commands, version gate, error handling
+  that does not include "regenerate via LLM"; (4) "Your output is not
+  the report" — explicit boundary that the agent's role is to invoke
+  the tool and report results, not to author the report. Documents the
+  2026-05-25 hand-crafted-HTML failure mode as the concrete example
+  this file exists to prevent.
+- **`keynote-recap verify <file>`** subcommand. Auto-detects `.html`
+  vs `.md`. Validation chain: file readable → (html only) generator
+  meta + `.recap-banner` + `.recap-stamp` present → frontmatter
+  parseable (yaml-narrow per v0.2.4) → recomputed body sha matches
+  `content-sha256` → `keynote-recap-version` field present. Output:
+  one-line `OK: keynote-recap v0.2.5 · sha:abc12345 · model:...`
+  (exit 0) or `FAIL: <reason>` (exit 1). Pre-v0.2.5 HTML returns the
+  friendly degraded message `FAIL: pre-v0.2.5 HTML, regenerate with
+  v0.2.5+`.
+- **`keynote-recap recap-and-verify <url> [recap_args...]`**
+  subcommand. Thin wrapper: invoke `recap`; on success, locate
+  `report.html` and run `verify`. `recap` failure → propagate exit
+  code; `verify` failure → exit 1. This is the single canonical
+  agent-facing command mandated by `AGENTS.md`. Removes "produce md,
+  render html, verify them" as three separate agent calls (each a
+  chance to drift) and guarantees that any session ending with
+  `recap-and-verify` exit 0 has a verified, signed, banner'd HTML.
+- **HTML top banner** (sticky). Real `report.html` now ships with a
+  `<div class="recap-banner">` injected at the top of `<body>`.
+  Sticky (`position: sticky; top: 0; z-index: 9999`) so it stays in
+  view at any scroll position — removes the "agent crops the first
+  100px" attack. 6px solid `#ff6900` color bar over a 38-44px main
+  body, monospace one-liner: `keynote-recap v0.2.5 · sha:abc12345 ·
+  model:claude-opus-4 · stages:6/6 · verified ✓`. Three-tone color
+  modulation by `stages-skipped` integrity state: healthy (orange bar
+  + `#fff7ed` bg) / half-run (yellow) / unverified — i.e. stage 1 or
+  stage 4 skipped (red). **No close button, no fold, no hide
+  affordance**: a closeable banner is a hand-craftable banner.
+  Designed so any hand-written HTML lacking it (or carrying a
+  wrong-color / wrong-height / non-sticky imitation) is visibly
+  distinguishable on inspection. The v0.2.4 right-side `.recap-stamp`
+  is **kept** as redundant defense — both must be present in real
+  output.
+- **`src/keynote_recap/verify.py`** (new module, ~281 lines). Pure
+  functions: `verify_file(path)`, `verify_html_text(text)`,
+  `verify_md_text(text)`, returning `VerifyResult(ok, summary,
+  file_kind, checks)`. No CLI imports; reusable from tests and from
+  future host-side integrations (opencode hooks, Cursor commands).
+
+### Changed
+
+- `_write_html` (`stages/render.py`) now injects the
+  `.recap-banner` element at the top of `<body>` based on
+  frontmatter metadata. Affects both pipeline paths that emit HTML —
+  `recap` stage 6 and `publish-html` — so re-rendering an existing
+  signed `report.md` produces a banner'd output.
+- `stages/render.py` CSS adds `.recap-banner` /
+  `.recap-banner-half-run` / `.recap-banner-unverified` rules for the
+  three integrity tones; print stylesheet keeps the banner inline at
+  top of first page (same pattern v0.2.4 uses for `.recap-stamp`).
+- `cli.py` module docstring updated to list the new `verify` and
+  `recap-and-verify` subcommands; `recap-and-verify` is now described
+  as the canonical entry point for agent-driven invocations.
+
+### Tests
+
+10 new tests (123 total, was 113):
+
+- `test_v025_verify_html_with_valid_frontmatter_returns_ok`
+- `test_v025_verify_html_with_tampered_body_returns_fail`
+- `test_v025_verify_html_without_generator_meta_returns_fail`
+- `test_v025_verify_html_without_recap_banner_returns_fail`
+- `test_v025_verify_md_with_valid_frontmatter_returns_ok`
+- `test_v025_verify_md_without_frontmatter_returns_fail`
+- `test_v025_verify_nonexistent_file_returns_fail`
+- `test_v025_render_writes_banner_at_body_top`
+- `test_v025_verify_cli_exits_0_for_valid_md`
+- `test_v025_verify_cli_exits_1_for_tampered_md`
+
+### Migration
+
+- v0.2.4.1 users: `git pull && pip install -e .` (or
+  `pip install -U keynote-recap`). No code or config changes
+  required.
+- **Not a BREAKING release.** `recap` and `publish-html` behaviour is
+  fully preserved; the only addition to existing paths is the banner
+  div injected at the top of `<body>`. No flag removal, no schema
+  change, no checkpoint reordering.
+- v0.2.4-produced HTML files cannot be `verify`-ed — they predate the
+  banner. `verify` returns the friendly degraded `FAIL: pre-v0.2.5
+  HTML, regenerate with v0.2.5+` rather than a cryptic mismatch,
+  pointing the user at the concrete fix (re-run `recap-and-verify` on
+  the source URL with v0.2.5+).
+
+### Acknowledged limitations
+
+- keynote-recap is the *callee*, not a supervisor. It **cannot
+  auto-rerun the agent**: when an agent skips the project entirely
+  and hand-crafts HTML, this project is never loaded and has no entry
+  point to "self-trigger" a re-run. Auto-rerun on verification failure
+  must live at the agent-host layer (opencode hooks, Cursor commands,
+  etc.) and is documented as a v0.2.6+ integration recipe, not project
+  code.
+- `verify` checks **structural integrity, not content quality**. A
+  real keynote-recap output that produced poor content will still pass
+  `verify`. Content quality is governed by the v0.2.4 M9 stage gates,
+  not by this layer.
+- `AGENTS.md` only helps cooperative agents. The L2 banner and L3
+  `verify` layers do **not** depend on agent cooperation — that is
+  the design point. An agent can still hand-craft HTML that includes
+  a plausible-looking fake banner; the visual delta strategy assumes
+  doing so well enough to fool a user is hard, not impossible. Users
+  who want certainty must run `verify`.
+
+---
+
 ## [0.2.4.1] — Bilibili subtitle cookie fallback (2026-05-25)
 
 **Patch.** Fixes a long-standing bug in `_download_subtitles` where the

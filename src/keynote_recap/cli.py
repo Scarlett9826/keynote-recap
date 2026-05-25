@@ -1,9 +1,14 @@
 """CLI entry point for keynote-recap.
 
 Subcommands:
-    recap   — run full 7-stage pipeline on a video URL
-    config  — print resolved config / generate sample config
-    stage   — run individual stage (debug)
+    recap              — run full 7-stage pipeline on a video URL
+    recap-and-verify   — recap + verify in one shot (v0.2.5; the canonical
+                         agent-facing entry — see AGENTS.md)
+    publish-html       — re-render report.md → report.html with sha verify
+    verify             — validate any .html / .md as a real keynote-recap output
+    config             — print resolved config / generate sample config
+    doctor             — preflight only, no pipeline run
+    stage              — run individual stage (debug)
 """
 from __future__ import annotations
 
@@ -513,6 +518,150 @@ def publish_html(report_md: Path, output: Path | None) -> None:
 
     render_report_md_to_html(report_md, out_path, meta)
     console.print(f"  [green]\u2713 wrote[/] {out_path}")
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# `verify` — validate a .html / .md as a real keynote-recap output (v0.2.5, L3)
+# ──────────────────────────────────────────────────────────────────────────────
+@main.command("verify")
+@click.argument("path", type=click.Path(exists=False, dir_okay=False, path_type=Path))
+def verify_cmd(path: Path) -> None:
+    """Validate a file as a genuine, untampered keynote-recap output.
+
+    Auto-detects .html / .md. Prints one summary line and exits:
+
+        exit 0  — OK: keynote-recap v0.2.5 · sha:abc12345 · file=report.html
+        exit 1  — FAIL: <specific reason>
+
+    What it checks:
+
+      .html — generator meta, content-sha256 meta, .recap-banner div
+              (v0.2.5+), .recap-stamp div (v0.2.4+ redundant defence)
+      .md   — frontmatter present, keynote-recap-version field present,
+              content-sha256 matches body bytes (tamper detection)
+
+    Use cases:
+
+      1. After running `recap`, verify the output before sharing it.
+      2. Before forwarding any HTML/MD claimed to be a keynote-recap
+         report, prove it's genuine.
+      3. Detect agents that hand-crafted a report and mislabeled it
+         as keynote-recap output (the file will fail verify).
+
+    This command never modifies anything; it is a read-only oracle.
+    """
+    from .verify import verify_file
+
+    result = verify_file(path)
+    console.print(result.summary)
+    if not result.ok:
+        sys.exit(1)
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# `recap-and-verify` — single canonical agent-facing entry (v0.2.5, L2.5)
+# ──────────────────────────────────────────────────────────────────────────────
+@main.command("recap-and-verify", context_settings={"ignore_unknown_options": True})
+@click.argument("url", type=str)
+@click.argument("recap_args", nargs=-1, type=click.UNPROCESSED)
+@click.pass_context
+def recap_and_verify(ctx: click.Context, url: str, recap_args: tuple[str, ...]) -> None:
+    """Run `recap` and then `verify` on the produced HTML, in one shot.
+
+    This is the canonical command AGENTS.md mandates. It removes
+    "produce md, render html, verify them" as three separate agent
+    calls (each a chance to drift) and gives a single exit code that
+    means "everything is genuinely there".
+
+    Any options passed after URL are forwarded verbatim to `recap`
+    (e.g. --output-dir, --transcript-file, --tier, --start-stage).
+
+    Exit codes:
+
+      0  — recap finished AND verify passed on report.html
+      1  — recap finished but verify failed (should never happen with
+           a valid recap; if it does, file a bug)
+      2  — recap itself failed (env / model / pipeline error)
+      130 — interrupted by user
+
+    Example:
+
+        keynote-recap recap-and-verify https://www.bilibili.com/video/BV1xxx \\
+            --output-dir ./out/your-company-2026 --keep-video
+    """
+    # Step 1: invoke the existing `recap` command via Click's invoke.
+    # We pass the URL and forward all extra args. If recap exits non-zero,
+    # Click raises SystemExit which we let propagate.
+    console.print("[bold cyan]recap-and-verify: step 1/2 — recap[/]")
+    console.print()
+    try:
+        ctx.invoke_recap_args = (url, *recap_args)  # type: ignore[attr-defined]
+        # Click's `invoke` with click commands needs us to parse args via
+        # the command's own parser. Easiest: re-enter via main_command CLI
+        # parsing on a synthetic argv, but that's brittle. Instead, call
+        # the underlying callback by reconstructing kwargs from recap's
+        # click options. Simplest robust approach: use Click's `invoke`
+        # with the parsed params.
+        recap_cmd = main.get_command(ctx, "recap")
+        assert recap_cmd is not None
+        # Parse args through recap's own parser to get a proper params dict
+        with recap_cmd.make_context(
+            "recap",
+            list((url, *recap_args)),
+            parent=ctx,
+        ) as recap_ctx:
+            recap_cmd.invoke(recap_ctx)
+    except SystemExit as e:
+        # `recap` calls sys.exit on its own error paths; surface that code.
+        code = e.code if isinstance(e.code, int) else 2
+        if code != 0:
+            console.print()
+            console.print(f"[bold red]recap-and-verify: recap stage failed (exit {code})[/]")
+            sys.exit(code)
+        # exit 0 falls through to verify
+
+    # Step 2: locate the produced report.html and verify it.
+    console.print()
+    console.print("[bold cyan]recap-and-verify: step 2/2 — verify[/]")
+
+    # Determine output dir the same way `recap` does.
+    out_dir: Path | None = None
+    args_list = list(recap_args)
+    for i, tok in enumerate(args_list):
+        if tok in ("--output-dir", "-o") and i + 1 < len(args_list):
+            out_dir = Path(args_list[i + 1])
+            break
+        if tok.startswith("--output-dir="):
+            out_dir = Path(tok.split("=", 1)[1])
+            break
+    if out_dir is None:
+        from .util import slugify_url
+        out_dir = Path("runs") / slugify_url(url)
+
+    html_path = out_dir / "report.html"
+    if not html_path.exists():
+        console.print(
+            f"[bold red]recap-and-verify failed:[/] expected {html_path} but it "
+            "does not exist. The recap stage reported success but produced no "
+            "HTML — file a bug at "
+            "https://github.com/Scarlett9826/keynote-recap"
+        )
+        sys.exit(1)
+
+    from .verify import verify_file
+    result = verify_file(html_path)
+    console.print(result.summary)
+    if not result.ok:
+        console.print()
+        console.print(
+            "[bold red]recap-and-verify failed:[/] recap exited 0 but verify "
+            "rejected the produced HTML. This indicates a bug — file at "
+            "https://github.com/Scarlett9826/keynote-recap"
+        )
+        sys.exit(1)
+
+    console.print()
+    console.print(f"[bold green]✓ recap-and-verify done[/] — {html_path}")
 
 
 if __name__ == "__main__":

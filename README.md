@@ -99,6 +99,15 @@ ban 词、必有核心判断、≥ 8 引用、≥ 8 表格、callout / 信源说
 - **`keynote-recap publish-html <report.md>`（M9.6）**：唯一合法的 report.md → HTML 通道；先校验 frontmatter content-sha256 和正文实际 sha 是否一致，不一致直接 abort（"报告已被修改"）。agent 想"压缩后再发"过不了这一关。
 - **HTML 印章（M9.7）**：右下角浮动小字 `v0.2.4 · sha:abc123de · 模型:claude-opus-4` + `<meta>` 标签。下游收到 HTML 一眼能验明正身。
 
+**v0.2.5 起，agent 不调用项目都会被识别**（L2/L3 internalized defense）：
+
+- **AGENTS.md**：项目根硬核明令式 agent 指南（opencode/Cursor/Claude Code 通用）。命令 agent 调 `recap-and-verify`，禁止手搓 HTML / markdown / 自调 LLM。
+- **HTML 顶部 banner**：sticky 橙色 6px 彩条 + 1 行等宽签名（version / sha8 / model / stages / verified ✓）。**不可关闭、不可隐藏**。健康/半残/未验证三档配色（橙 / 黄 / 红）。手搓 HTML 因缺这条 banner 一眼穿帮。
+- **`keynote-recap verify <file>`**：二元 exit / 1 行 summary。auto-detect .html / .md。检查 generator meta / content-sha256 / banner / stamp / frontmatter sha 一致。任何人拿到任意 HTML 都能一句命令验真。
+- **`keynote-recap recap-and-verify <url>`**：单一规范命令。recap → 自动 verify → 都通过才 exit 0。AGENTS.md mandate 这条作为 agent 唯一合法入口。
+
+**为什么这层不依赖 agent 配合**：手搓 HTML 不会自然带这条 banner（除非 agent 知道该伪造它，且复刻精确——颜色/位置/格式/sticky 行为全对，比直接调命令累得多）。`verify` 是确定性的二元判定，不依赖 agent 自觉。
+
 ## 5 分钟上手
 
 ```bash
@@ -111,8 +120,8 @@ export OPENAI_API_KEY=sk-xxx
 export OPENAI_BASE_URL=https://api.openai.com/v1   # 或 anthropic/zhipu/etc.
 export KEYNOTE_RECAP_MODEL=claude-opus-4           # 或 gemini-2.5-pro / gpt-4o
 
-# 3. 跑一份复盘
-keynote-recap recap https://www.youtube.com/watch?v=wYSncx9zLIU \
+# 3. 跑一份复盘（v0.2.5 起的规范入口：recap + 自动 verify）
+keynote-recap recap-and-verify https://www.youtube.com/watch?v=wYSncx9zLIU \
   --output-dir ./io26 \
   --keep-video
 

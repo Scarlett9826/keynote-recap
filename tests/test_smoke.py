@@ -1910,3 +1910,101 @@ def test_v024_publish_html_aborts_on_no_frontmatter():
         result = runner.invoke(main, ["publish-html", str(md_path)])
         assert result.exit_code == 2
         assert "no frontmatter" in result.output
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# v0.2.4.1 — _download_subtitles cookie fallback
+# ──────────────────────────────────────────────────────────────────────────────
+def test_v0241_subtitle_no_retry_when_first_attempt_succeeds(tmp_path, monkeypatch):
+    """If the first yt-dlp call (no cookies) produces a subtitle file,
+    the cookie retry must NOT run."""
+    from keynote_recap.stages import download as dl
+
+    calls: list[list[str]] = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(list(cmd))
+        # First attempt: drop a fake srt file in dest_dir
+        # dest_dir is encoded in the -o argument: "<dest>/subtitle.%(ext)s"
+        for i, tok in enumerate(cmd):
+            if tok == "-o":
+                out_tmpl = cmd[i + 1]
+                dest = Path(out_tmpl).parent
+                (dest / "subtitle.zh-CN.srt").write_text("1\n00:00:00,000 --> 00:00:01,000\nhi\n")
+                break
+
+        class R:
+            returncode = 0
+            stdout = ""
+            stderr = ""
+        return R()
+
+    monkeypatch.setattr(dl.subprocess, "run", fake_run)
+    path, lang = dl._download_subtitles("https://example.com/x", tmp_path, ["zh-CN", "ai-zh"])
+    assert path.endswith("subtitle.zh-CN.srt")
+    assert lang == "zh-CN"
+    # Critical: no cookie retry should have happened
+    assert len(calls) == 1
+    assert "--cookies-from-browser" not in calls[0]
+
+
+def test_v0241_subtitle_retries_with_cookies_when_first_yields_no_file(tmp_path, monkeypatch):
+    """If the first attempt produces no usable subtitle file (Bilibili 2024H2
+    behaviour: returncode 0 but no zh-CN srt), the function must retry with
+    --cookies-from-browser chrome and find the subtitle that time."""
+    from keynote_recap.stages import download as dl
+
+    calls: list[list[str]] = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(list(cmd))
+        is_cookie_retry = "--cookies-from-browser" in cmd
+        if is_cookie_retry:
+            # Cookie attempt: drop the ai-zh srt
+            for i, tok in enumerate(cmd):
+                if tok == "-o":
+                    dest = Path(cmd[i + 1]).parent
+                    (dest / "subtitle.ai-zh.srt").write_text("1\n00:00:00,000 --> 00:00:01,000\nhi\n")
+                    break
+        # First attempt: do nothing (simulates B-station "success but no subs")
+
+        class R:
+            returncode = 0
+            stdout = ""
+            stderr = ""
+        return R()
+
+    monkeypatch.setattr(dl.subprocess, "run", fake_run)
+    path, lang = dl._download_subtitles("https://example.com/x", tmp_path, ["zh-CN", "ai-zh"])
+    assert path.endswith("subtitle.ai-zh.srt")
+    assert lang == "ai-zh"
+    # Two calls: one without cookies, one with
+    assert len(calls) == 2
+    assert "--cookies-from-browser" not in calls[0]
+    assert "--cookies-from-browser" in calls[1]
+    # Verify cookie target is `chrome` (matches _fetch_metadata / _download_video)
+    idx = calls[1].index("--cookies-from-browser")
+    assert calls[1][idx + 1] == "chrome"
+
+
+def test_v0241_subtitle_returns_empty_when_both_attempts_fail(tmp_path, monkeypatch):
+    """If neither attempt produces a subtitle file, return ('', '') so
+    pipeline.py can route to M9.2 abort with the correct fix-it message."""
+    from keynote_recap.stages import download as dl
+
+    calls: list[list[str]] = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(list(cmd))
+
+        class R:
+            returncode = 0
+            stdout = ""
+            stderr = ""
+        return R()
+
+    monkeypatch.setattr(dl.subprocess, "run", fake_run)
+    path, lang = dl._download_subtitles("https://example.com/x", tmp_path, ["zh-CN"])
+    assert path == ""
+    assert lang == ""
+    assert len(calls) == 2  # tried both

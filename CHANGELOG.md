@@ -4,6 +4,52 @@ All notable changes to **keynote-recap** are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.4.1] — Bilibili subtitle cookie fallback (2026-05-25)
+
+**Patch.** Fixes a long-standing bug in `_download_subtitles` where the
+yt-dlp call had no `--cookies-from-browser` retry, while `_fetch_metadata`
+and `_download_video` both did. Bilibili changed policy in 2024H2 to
+require login for subtitle access; the first call returns `returncode=0`
+but only delivers `danmaku.xml` (not a real subtitle file). Pre-v0.2.4
+the missing transcript was silently swallowed and stage 2 captions
+hallucinated content; v0.2.4's M9.2 hard-aborts on missing transcript,
+which correctly stopped the pipeline but also exposed this bug as a
+regression for Bilibili users whose previous reports "worked".
+
+### Fixed
+
+- `stages/download.py::_download_subtitles` now retries with
+  `--cookies-from-browser chrome` when the first attempt produces no
+  usable `.srt`/`.vtt` file. Detection is based on **file presence**, not
+  yt-dlp returncode, since Bilibili returns 0 without delivering the
+  subtitle. Mirrors the existing fallback pattern in `_fetch_metadata`
+  (line 124-131) and `_download_video` (line 152-160).
+
+### Tests
+
+- 3 new tests (113 total, +3):
+  - `test_v0241_subtitle_no_retry_when_first_attempt_succeeds` —
+    youtube-style sites still work with one call, no cookie attempt.
+  - `test_v0241_subtitle_retries_with_cookies_when_first_yields_no_file`
+    — Bilibili-style "success but no file" triggers cookie retry and
+    succeeds on the second call.
+  - `test_v0241_subtitle_returns_empty_when_both_attempts_fail` — both
+    failed → returns `("", "")` so M9.2 can route to abort message.
+
+### Migration
+
+- None. Patch release; `pip install -U keynote-recap` (or `git pull &&
+  pip install -e .` for editable installs). No flag/API changes.
+
+### Verified
+
+- Ran end-to-end against `BV1DiLY6DEfj` (real Bilibili URL): first call
+  prints `[yellow]No subtitle file found; retry with browser cookies...[/]`,
+  second call retrieves a 266 KB `subtitle.ai-zh.srt` containing the
+  actual transcript ("大家晚上好/欢迎大家参加今晚的发布会...").
+
+---
+
 ## [0.2.4] — M9 anti-shortcut layer (2026-05-25)
 
 **BREAKING.** Two flag removals + one new hard-fail mode. Motivated by

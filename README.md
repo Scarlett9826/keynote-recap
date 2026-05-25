@@ -91,6 +91,7 @@ ban 词、必有核心判断、≥ 8 引用、≥ 8 表格、callout / 信源说
 
 - **删除 `--force`**：text-only / 未验证视觉模型一律硬 abort，无后门。需要新模型 → 提 PR 加进 `preflight.py::_VERIFIED_VISION_MODELS`（手验产出无误后）。
 - **stage 1 字幕失败硬终止**：v0.2.3 之前是软警告继续跑，导致后面 stage 都用空 transcript 跑出半残报告；v0.2.4 直接 abort 并给修复提示（`yt-dlp --cookies-from-browser`、`--transcript-file ./manual.srt`、换源）。
+  - **v0.2.4.1**：字幕拉取失败会自动用 Chrome cookie 重试一次（B 站自 2024H2 强制登录才返回字幕；该 fallback 此前仅 metadata/视频下载有，字幕函数漏了）。所以 v0.2.4 用户在 B 站遇到的「能拉视频但 abort 字幕」，升 v0.2.4.1 即可。
 - **新选项 `--transcript-file`**：B 站 412 / 区域锁 / 私有视频的官方逃生通道；接 `.srt` `.vtt` `.txt`。
 - **stage 4 跳过 / 零验证事实 → 红 banner**："本报告未经事实查证"。区别于「项目质量门失败」红 banner——后者是方法论跑了但结果未达标，前者是方法论压根没跑。
 - **报告顶部强制「诚信声明」callout**：✅ 完整运行 / ⚠️ 部分运行两套模板，列出实际跑了/跳过哪些 stage、用了什么模型、本次无法验证的方法论项。删不掉——删了会破坏 sha 校验。

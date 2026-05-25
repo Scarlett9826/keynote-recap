@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "keynote-recap"
-version = "0.2.4"
+version = "0.2.4.1"
 description = "Turn 1.5h tech keynote videos into Feishu-friendly illustrated Chinese recap reports."
 readme = "README.md"
 license = { text = "MIT" }

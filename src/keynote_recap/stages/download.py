@@ -182,9 +182,14 @@ def _resolution_to_format(resolution: str) -> str:
 
 
 def _download_subtitles(url: str, dest_dir: Path, languages: list[str]) -> tuple[str, str]:
-    """Download subtitles. Returns (path, lang) or ('', '')."""
+    """Download subtitles. Returns (path, lang) or ('', '').
+
+    Tries without cookies first; if no usable subtitle file appears (e.g.
+    Bilibili requires login for subtitles since 2024H2), retries with
+    --cookies-from-browser chrome.
+    """
     lang_arg = ",".join(languages)
-    cmd = [
+    base_cmd = [
         "yt-dlp",
         "--skip-download",
         "--write-subs",
@@ -196,23 +201,32 @@ def _download_subtitles(url: str, dest_dir: Path, languages: list[str]) -> tuple
         "--no-playlist",
         url,
     ]
-    subprocess.run(cmd, capture_output=True, text=True)
 
-    # Find the best matching subtitle file
-    for lang in languages:
+    def _scan() -> tuple[str, str]:
+        for lang in languages:
+            for ext in ("srt", "vtt"):
+                for pattern in (f"subtitle.{lang}.{ext}", f"subtitle*{lang}*.{ext}"):
+                    matches = list(dest_dir.glob(pattern))
+                    if matches:
+                        return str(matches[0]), lang
         for ext in ("srt", "vtt"):
-            for pattern in (f"subtitle.{lang}.{ext}", f"subtitle*{lang}*.{ext}"):
-                matches = list(dest_dir.glob(pattern))
-                if matches:
-                    return str(matches[0]), lang
+            any_match = list(dest_dir.glob(f"subtitle*.{ext}"))
+            if any_match:
+                return str(any_match[0]), "auto"
+        return "", ""
 
-    # Any srt/vtt as fallback
-    for ext in ("srt", "vtt"):
-        any_match = list(dest_dir.glob(f"subtitle*.{ext}"))
-        if any_match:
-            return str(any_match[0]), "auto"
+    # First attempt: no cookies (works for sites without auth requirement)
+    subprocess.run(base_cmd, capture_output=True, text=True)
+    path, lang = _scan()
+    if path:
+        return path, lang
 
-    return "", ""
+    # Retry with cookies — Bilibili since 2024H2 requires login for subtitles,
+    # and yt-dlp's first attempt returns 0 with only danmaku.xml (not usable).
+    console.print("  [yellow]No subtitle file found; retry with browser cookies...[/]")
+    cmd_cookie = base_cmd + ["--cookies-from-browser", "chrome"]
+    subprocess.run(cmd_cookie, capture_output=True, text=True)
+    return _scan()
 
 
 # ──────────────────────────────────────────────────────────────────────────────

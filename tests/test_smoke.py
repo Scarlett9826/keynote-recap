@@ -7,6 +7,8 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+import pytest
+
 # Make src/ importable
 SRC_ROOT = Path(__file__).parent.parent / "src"
 if str(SRC_ROOT) not in sys.path:
@@ -3340,17 +3342,24 @@ def test_p14_build_httpx_timeout_returns_httpx_timeout():
     assert isinstance(t, httpx.Timeout)
 
 
-def test_p14_httpx_timeout_caps_read_at_120s():
-    """Read timeout must be <= 120s regardless of overall budget.
+def test_v037_bug3_read_timeout_caps_at_300s():
+    """BUG-3: read timeout caps at 300s regardless of larger overall budget.
 
-    This is the hang detector: even if user sets a 1-hour overall budget,
-    a connection idle for 120s should fail fast.
+    300s is the short-term bridge: non-streaming calls may need >120s for
+    the first byte on large prompts (bug-3). The proper fix (streaming)
+    will restore a tighter cap.  When overall budget is <300s, read must
+    follow the overall budget.
     """
     from keynote_recap.llm_client import _build_httpx_timeout
     t = _build_httpx_timeout(3600)
     assert t.read is not None
-    assert t.read <= 120.0, (
-        f"read timeout {t.read}s > 120s defeats the hang detector"
+    assert t.read <= 300.0, (
+        f"read timeout {t.read}s > 300s defeats the hang detector bridge"
+    )
+    # When overall budget is below the cap, read must follow it
+    t2 = _build_httpx_timeout(60)
+    assert t2.read == 60.0, (
+        f"read timeout {t2.read}s != 60s; should match overall budget when below cap"
     )
 
 
@@ -3834,3 +3843,462 @@ def test_v035_api_key_check_uses_info_glyph_in_cli(tmp_path, monkeypatch, capsys
     # api_key bullet must use ℹ (U+2139), not ⚠ (U+26A0).
     assert "\u2139" in joined, f"api_key line missing ℹ in:\n{joined}"
     assert "\u26a0" not in joined, f"api_key line still has ⚠ in:\n{joined}"
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# v0.3.7 P2 — soft floor + sanctioned override
+# ──────────────────────────────────────────────────────────────────────────────
+def _make_low_yield_frames(n: int, useful_ratio: float):
+    """Build a list of SelectedFrame with controlled count + useful_ratio.
+
+    Useful = info_density >= EXTRACT_INFO_DENSITY_MIN (0.70).
+    """
+    from keynote_recap.state import SelectedFrame
+    n_useful = int(round(n * useful_ratio))
+    frames = []
+    for i in range(n):
+        frames.append(SelectedFrame(
+            filename=f"frame_{i:05d}.jpg",
+            timestamp_s=float(i),
+            category="other",
+            caption=f"caption {i}",
+            recommended_section="一",
+            info_density=0.85 if i < n_useful else 0.50,
+            relevance=0.80,
+        ))
+    return frames
+
+
+def test_v037_p2_strict_floor_still_raises_when_no_override():
+    """Default behaviour preserved: count < 35 raises ExtractFloorError."""
+    from keynote_recap.stages.extract import (
+        ExtractFloorError,
+        _check_extract_floors,
+    )
+
+    frames = _make_low_yield_frames(n=30, useful_ratio=0.80)
+    with pytest.raises(ExtractFloorError):
+        _check_extract_floors(frames, count_min=35, useful_ratio_min=0.50)
+
+
+def test_v037_p2_strict_useful_ratio_floor_still_raises():
+    """Default behaviour preserved: useful_ratio < 0.50 raises."""
+    from keynote_recap.stages.extract import (
+        ExtractFloorError,
+        _check_extract_floors,
+    )
+
+    frames = _make_low_yield_frames(n=40, useful_ratio=0.30)
+    with pytest.raises(ExtractFloorError):
+        _check_extract_floors(frames, count_min=35, useful_ratio_min=0.50)
+
+
+def test_v037_p2_accept_low_yield_count_breach_does_not_raise(tmp_path):
+    """With accept_low_yield + state, count breach is logged not raised."""
+    from keynote_recap.stages.extract import _check_extract_floors
+    from keynote_recap.state import State
+    state = State.new(url="https://example.com/v", output_dir=tmp_path)
+    frames = _make_low_yield_frames(n=30, useful_ratio=0.80)
+    # Must not raise
+    _check_extract_floors(
+        frames, count_min=35, useful_ratio_min=0.50,
+        accept_low_yield=True, state=state,
+    )
+    assert state.low_yield_override is True
+    d = state.low_yield_details
+    assert d["selected_count"] == 30
+    assert d["count_floor"] == 35
+    assert any("count 30 < 35" in b for b in d["breaches"])
+    assert state.runtime_warnings, "expected a runtime warning recording the override"
+
+
+def test_v037_p2_accept_low_yield_useful_ratio_breach_does_not_raise(tmp_path):
+    """With accept_low_yield + state, useful_ratio breach is logged not raised."""
+    from keynote_recap.stages.extract import _check_extract_floors
+    from keynote_recap.state import State
+    state = State.new(url="https://example.com/v", output_dir=tmp_path)
+    frames = _make_low_yield_frames(n=40, useful_ratio=0.30)
+    _check_extract_floors(
+        frames, count_min=35, useful_ratio_min=0.50,
+        accept_low_yield=True, state=state,
+    )
+    assert state.low_yield_override is True
+    d = state.low_yield_details
+    assert d["useful_ratio"] < 0.50
+    assert d["useful_ratio_floor"] == 0.50
+    assert any("useful_ratio" in b for b in d["breaches"])
+
+
+def test_v037_p2_accept_low_yield_passing_floors_does_not_set_override(tmp_path):
+    """If floors are met, override stays False even with accept_low_yield=True."""
+    from keynote_recap.stages.extract import _check_extract_floors
+    from keynote_recap.state import State
+    state = State.new(url="https://example.com/v", output_dir=tmp_path)
+    frames = _make_low_yield_frames(n=40, useful_ratio=0.80)
+    _check_extract_floors(
+        frames, count_min=35, useful_ratio_min=0.50,
+        accept_low_yield=True, state=state,
+    )
+    assert state.low_yield_override is False
+    assert not state.low_yield_details
+    assert not state.runtime_warnings
+
+
+def test_v037_p2_cli_flag_propagates_to_config():
+    """``--accept-low-yield`` flag flows into Config.accept_low_yield."""
+    from click.testing import CliRunner
+
+    from keynote_recap.cli import main
+
+    runner = CliRunner()
+    # --help must list the flag (lightweight test that flag exists).
+    result = runner.invoke(main, ["recap", "--help"])
+    assert result.exit_code == 0
+    assert "--accept-low-yield" in result.output
+    # And it must mention it's a sanctioned escape.
+    assert "low-yield" in result.output.lower()
+
+
+def test_v037_p2_config_field_exists():
+    from keynote_recap.config import Config
+    cfg = Config()
+    assert hasattr(cfg, "accept_low_yield")
+    assert cfg.accept_low_yield is False
+
+
+def test_v037_p2_state_fields_exist(tmp_path):
+    from keynote_recap.state import State
+    s = State.new(url="https://example.com/v", output_dir=tmp_path)
+    assert hasattr(s, "low_yield_override")
+    assert hasattr(s, "low_yield_details")
+    assert s.low_yield_override is False
+    assert s.low_yield_details == {}
+
+
+def test_v037_p2_integrity_callout_surfaces_low_yield(tmp_path):
+    """When low_yield_override is set, integrity callout renders the
+    half-run ⚠️ template AND includes the explicit 低产出豁免 line."""
+    from keynote_recap.stages.draft import _build_integrity_callout
+    from keynote_recap.state import State
+    s = State.new(url="https://example.com/v", output_dir=tmp_path)
+    s.models_used["extract"] = "claude-sonnet-4"
+    s.model_tiers["extract"] = "verified_multimodal"
+    # Healthy preconditions otherwise — only low-yield should force ⚠.
+    s.verified_facts = []
+    s.low_yield_override = True
+    s.low_yield_details = {
+        "selected_count": 30,
+        "count_floor": 35,
+        "useful_count": 18,
+        "useful_ratio": 0.45,
+        "useful_ratio_floor": 0.50,
+        "breaches": ["count 30 < 35", "useful_ratio 45% < 50%"],
+    }
+    out = _build_integrity_callout(s, cfg=None)
+    # Must use ⚠ template (not ✅)
+    assert "⚠" in out or "部分运行" in out
+    # Must explicitly call out the override
+    assert "低产出豁免" in out
+    # Must list actual numbers (not just floor)
+    assert "30" in out
+    assert "35" in out
+
+
+def test_v037_p2_frontmatter_carries_low_yield_when_set(tmp_path):
+    """The frontmatter dict produced by _assemble_report must include
+    ``low-yield-override: true`` when state.low_yield_override is set."""
+    from keynote_recap.stages.draft import _assemble_report
+    from keynote_recap.state import State
+    s = State.new(url="https://example.com/v", output_dir=tmp_path)
+    s.models_used["extract"] = "claude-sonnet-4"
+    s.model_tiers["extract"] = "verified_multimodal"
+    s.low_yield_override = True
+    s.low_yield_details = {
+        "selected_count": 30,
+        "count_floor": 35,
+        "useful_ratio": 0.45,
+        "useful_ratio_floor": 0.50,
+        "breaches": ["count 30 < 35"],
+    }
+    body = _assemble_report(
+        title="Test",
+        callout="<div></div>",
+        body="## 一\nbody\n## 信源说明\n- src",
+        state=s,
+        cfg=None,
+    )
+    assert "low-yield-override: true" in body
+    # And actual numbers must surface in frontmatter (so a third-party
+    # verifier can audit the override).
+    assert "selected_count" in body or "30" in body
+
+
+def test_v037_p2_render_banner_downgrades_for_low_yield():
+    """``_build_top_banner`` must emit the half-run yellow class and a
+    'low-yield' suffix when frontmatter carries low-yield-override: true,
+    even when no stages were skipped.
+
+    Reading frontmatter (not transient state) is the contract: a third
+    party running ``keynote-recap verify`` on the published HTML must
+    reach the same color tier.
+    """
+    from keynote_recap.stages.render import _build_top_banner
+    fm = {
+        "keynote-recap-version": "0.3.7",
+        "content-sha256": "deadbeef" * 8,
+        "model-extract": "claude-sonnet-4",
+        "stages-completed": ["1", "2", "3", "5", "5.5", "6"],
+        "stages-skipped": [],
+        "low-yield-override": True,
+    }
+    html = _build_top_banner(fm)
+    assert "recap-banner-half-run" in html, html
+    assert "low-yield" in html, html
+
+
+def test_v037_p2_render_banner_healthy_when_no_low_yield():
+    """Sanity: without low_yield + no skipped stages, banner stays green."""
+    from keynote_recap.stages.render import _build_top_banner
+    fm = {
+        "keynote-recap-version": "0.3.7",
+        "content-sha256": "deadbeef" * 8,
+        "model-extract": "claude-sonnet-4",
+        "stages-completed": ["1", "2", "3", "5", "5.5", "6"],
+        "stages-skipped": [],
+    }
+    html = _build_top_banner(fm)
+    assert "recap-banner-half-run" not in html
+    assert "recap-banner-unverified" not in html
+    assert "verified" in html
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# v0.3.7 P3 — stage-1 actual-resolution probe
+# ──────────────────────────────────────────────────────────────────────────────
+def test_v037_p3_video_meta_has_actual_resolution_fields():
+    from keynote_recap.state import VideoMeta
+    v = VideoMeta(url="https://example.com/v")
+    assert hasattr(v, "actual_resolution")
+    assert hasattr(v, "actual_height")
+    assert v.actual_resolution == ""
+    assert v.actual_height == 0
+
+
+def test_v037_p3_probe_resolution_handles_missing_ffprobe(monkeypatch, tmp_path):
+    """If ffprobe is missing or fails, probe returns (0, 0) gracefully."""
+    from keynote_recap.stages import download as dl
+    fake_video = tmp_path / "video.mp4"
+    fake_video.write_bytes(b"\x00\x00")  # not a real video
+    # Force subprocess.run to raise FileNotFoundError (simulates no ffprobe).
+    def _raise(*a, **kw):
+        raise FileNotFoundError("ffprobe not found")
+    monkeypatch.setattr(dl.subprocess, "run", _raise)
+    w, h = dl._probe_resolution(fake_video)
+    assert (w, h) == (0, 0)
+
+
+def test_v037_p3_probe_resolution_parses_csv(monkeypatch, tmp_path):
+    """ffprobe ``csv=s=x:p=0`` output ``1920x1080`` is parsed correctly."""
+    from keynote_recap.stages import download as dl
+
+    class _R:
+        returncode = 0
+        stdout = "1920x1080\n"
+        stderr = ""
+
+    monkeypatch.setattr(dl.subprocess, "run", lambda *a, **kw: _R())
+    w, h = dl._probe_resolution(tmp_path / "v.mp4")
+    assert (w, h) == (1920, 1080)
+
+
+def test_v037_p3_probe_resolution_parses_low_res(monkeypatch, tmp_path):
+    """480x270 (Bilibili low-quality fallback) parses correctly."""
+    from keynote_recap.stages import download as dl
+
+    class _R:
+        returncode = 0
+        stdout = "480x270\n"
+        stderr = ""
+
+    monkeypatch.setattr(dl.subprocess, "run", lambda *a, **kw: _R())
+    w, h = dl._probe_resolution(tmp_path / "v.mp4")
+    assert (w, h) == (480, 270)
+
+
+def test_v037_p3_probe_resolution_handles_garbage_output(monkeypatch, tmp_path):
+    from keynote_recap.stages import download as dl
+
+    class _R:
+        returncode = 0
+        stdout = "this is not csv\n"
+        stderr = ""
+
+    monkeypatch.setattr(dl.subprocess, "run", lambda *a, **kw: _R())
+    w, h = dl._probe_resolution(tmp_path / "v.mp4")
+    assert (w, h) == (0, 0)
+
+
+def test_v037_p3_low_res_threshold_is_720p():
+    """720p is the documented threshold; ensure no off-by-one."""
+    # Property check — 720p should NOT trigger warning, 719p should.
+    # We inspect the source rather than running stage 1 (network).
+    from pathlib import Path
+    p = Path(__file__).resolve().parents[1] / "src/keynote_recap/stages/download.py"
+    text = p.read_text()
+    assert "actual_h < 720" in text, (
+        "P3 low-resolution threshold must remain 720p (sub-HD warning)."
+    )
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# v0.3.7 bug fixes — BUG-1/2/3/5
+# ──────────────────────────────────────────────────────────────────────────────
+def test_v037_bug1_auth_error_no_retry():
+    """BUG-1: AuthenticationError must NOT trigger tenacity retry.
+
+    When a 401 fires, the underlying provider method should be called
+    exactly once; tenacity must not retry.  We test this by mocking the
+    OpenAI backend's client to raise openai.AuthenticationError — the
+    first call reaches it, the retry predicate rejects it, and the
+    exception propagates immediately.
+    """
+    from unittest.mock import MagicMock, patch
+    import openai
+    from keynote_recap.llm_client import _OpenAIBackend, _NON_RETRYABLE
+
+    # Verify that the retry excludes are plumbed (source-level check)
+    assert openai.AuthenticationError in _NON_RETRYABLE, (
+        "AuthenticationError must be in _NON_RETRYABLE"
+    )
+    assert openai.PermissionDeniedError in _NON_RETRYABLE
+    assert openai.BadRequestError in _NON_RETRYABLE
+
+    # Functional: patch the OpenAI client to raise on first call
+    mock_client = MagicMock()
+    mock_client.chat.completions.create.side_effect = openai.AuthenticationError(
+        "401 test", response=MagicMock(), body={}
+    )
+    with patch.object(_OpenAIBackend, "client", mock_client, create=True):
+        backend = _OpenAIBackend.__new__(_OpenAIBackend)
+        with pytest.raises(openai.AuthenticationError):
+            backend.chat(model="test", user="hello")
+    assert mock_client.chat.completions.create.call_count == 1, (
+        "AuthenticationError should not be retried — expected 1 call, "
+        f"got {mock_client.chat.completions.create.call_count}"
+    )
+
+
+def test_v037_bug2_stage2_preserves_selected_frames(tmp_path):
+    """BUG-2: stage 2 cleanup must not delete files in state.selected_frames.
+
+    Test scenario: stage 2 runs, then stage 3 selects frames, then
+    state.json is saved with those filenames. On rerun, stage 2's
+    cleanup must NOT remove files referenced by state.selected_frames
+    even if they are not in the new candidate set.
+    """
+    from keynote_recap.state import State, FrameCandidate, SelectedFrame
+    from keynote_recap.stages import segment
+
+    # Source-level check: the cleanup block in segment.py must protect
+    # state.selected_frames files.  We verify by reading the source
+    # (avoiding ffmpeg dependency of an actual run() call).
+    src = Path(segment.__file__).read_text()
+    assert "state.selected_frames" in src, (
+        "BUG-2 protection logic must reference state.selected_frames in the "
+        "cleanup block; not found in segment.py source"
+    )
+    assert "keep.add(f.filename)" in src, (
+        "Must add selected frame filenames to keep set"
+    )
+
+    # Functional check: simulate the cleanup logic on a state with
+    # selected_frames that include files outside the current candidate set.
+    # The cleanup should NOT delete those protected files.
+    output_dir = tmp_path / "output"
+    output_dir.mkdir()
+    raw_dir = output_dir / "frames_raw"
+    raw_dir.mkdir()
+    for fname in ("frame_00001.jpg", "frame_00002.jpg", "frame_00003.jpg"):
+        (raw_dir / fname).write_text("x")
+
+    state = State.new(url="https://example.com", output_dir=output_dir)
+    state.candidate_frames = [
+        FrameCandidate(filename="frame_00001.jpg", timestamp_s=0.0, score=90.0),
+        FrameCandidate(filename="frame_00002.jpg", timestamp_s=5.0, score=80.0),
+    ]
+    state.selected_frames = [
+        SelectedFrame(filename="frame_00003.jpg", timestamp_s=10.0,
+                      category="demo", caption="t", recommended_section="t",
+                      info_density=0.8, relevance=0.8),
+        SelectedFrame(filename="frame_00001.jpg", timestamp_s=0.0,
+                      category="demo", caption="t", recommended_section="t",
+                      info_density=0.8, relevance=0.8),
+    ]
+    # Inline the cleanup logic from segment.py (lines 110-114 + BUG-2 protection)
+    keep = {c.filename for c in state.candidate_frames}
+    for f in state.selected_frames:
+        keep.add(f.filename)
+    raw_frames = sorted(raw_dir.glob("frame_*.jpg"))
+    for p in raw_frames:
+        if p.name not in keep:
+            p.unlink(missing_ok=True)
+    # Protected files must still exist
+    assert (raw_dir / "frame_00001.jpg").exists(), "selected frames must survive cleanup"
+    assert (raw_dir / "frame_00003.jpg").exists(), (
+        "selected frames from prior run must survive cleanup"
+    )
+    # frame_00002 was NOT in selected_frames nor the only candidate kept,
+    # but it IS in candidates and therefore in keep.  Actually it IS in
+    # candidates, so keep includes it.  There's no unselected+unprotected
+    # file to delete in this scenario, which is expected — the real BUG-2
+    # would manifest as frame_00003 getting deleted when candidates differ.
+    # The key invariant is frame_00003 survived.
+
+
+def test_v037_bug5_density_distribution_fields():
+    """BUG-5: _compute_density_distribution returns correct stats."""
+    from keynote_recap.stages.extract import _compute_density_distribution
+    from keynote_recap.state import SelectedFrame
+    from keynote_recap import methodology as M
+
+    frames = [
+        SelectedFrame(filename=f"f{i}.jpg", timestamp_s=float(i),
+                      category="demo", caption="t", recommended_section="t",
+                      info_density=d, relevance=0.8)
+        for i, d in enumerate([0.3, 0.5, 0.6, 0.7, 0.8, 0.85, 0.9, 0.95])
+    ]
+    dd = _compute_density_distribution(frames, M.EXTRACT_INFO_DENSITY_MIN)
+    assert dd["count"] == 8
+    assert dd["min"] == 0.3
+    assert dd["max"] == 0.95
+    assert dd["median"] == pytest.approx(0.75, abs=0.1)  # (0.7 + 0.8) / 2 = 0.75
+    assert dd["below_threshold_count"] == 3  # 0.3, 0.5, 0.6 < 0.7
+    assert "p25" in dd
+    assert "p75" in dd
+
+    # Empty input
+    assert _compute_density_distribution([], 0.7) == {}
+
+
+def test_v037_bug5_density_distribution_round_trip(tmp_path):
+    """BUG-5: density distribution stored on state survives save/load."""
+    from keynote_recap.state import State
+
+    state = State.new(url="https://x.com", output_dir=str(tmp_path))
+    state.extract_density_distribution = {
+        "count": 5, "min": 0.4, "p25": 0.5, "median": 0.7,
+        "p75": 0.8, "max": 0.9, "below_threshold_count": 2,
+    }
+    p = state.save()
+    loaded = State.load(p)
+    assert loaded.extract_density_distribution["median"] == 0.7
+    assert loaded.extract_density_distribution["below_threshold_count"] == 2
+    assert loaded.extract_density_distribution["max"] == 0.9
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# v0.3.7 sentinel — version bump
+# ──────────────────────────────────────────────────────────────────────────────
+def test_v037_version_bumped():
+    from keynote_recap import __version__
+    assert __version__ == "0.3.7"

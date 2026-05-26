@@ -108,7 +108,13 @@ def run(state: State, cfg: Config) -> State:
     candidates.sort(key=lambda c: c.timestamp_s)
 
     # 6. delete raw frames that didn't make it (saves disk)
+    # BUG-2: protect frames already selected by stage 3 in a prior run
+    # (rerun scenarios where state.load() restored selected_frames from a
+    # previous pipeline). Cleanup must not delete files referenced by
+    # selected_frames, even if the current run's candidates differ.
     keep = {c.filename for c in candidates}
+    for f in state.selected_frames:
+        keep.add(f.filename)
     for p in raw_frames:
         if p.name not in keep:
             p.unlink(missing_ok=True)

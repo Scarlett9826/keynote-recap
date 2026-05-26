@@ -4,6 +4,93 @@ All notable changes to **keynote-recap** are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.7] — Soft-floor sanctioned override + stage-1 resolution probe (2026-05-26)
+
+### Added (P2 — soft floor with override)
+
+- **``--accept-low-yield`` CLI flag** on ``recap``. Sanctioned escape hatch
+  for stage 3 hard floors (count < 35 or useful_ratio < 50%). When passed,
+  floor breaches no longer raise ``ExtractFloorError``; instead the breach
+  is recorded on ``state.low_yield_override = True`` + ``state.low_yield_details``.
+  AGENTS.md prohibits *editing* methodology constants; this flag is the
+  project-sanctioned alternative for legitimate low-info sources
+  (low-resolution downloads, cinematic content with sparse text frames).
+  Override is **always visible** in the published artifact:
+    - ``report.md`` frontmatter: ``low-yield-override: true`` +
+      ``low-yield-details:`` (selected_count, useful_ratio, floors, breaches).
+    - Integrity callout in body: ⚠️ partial-run template extended with
+      explicit "低产出豁免" line listing actual numbers.
+    - HTML banner: downgraded from green "verified ✓" to yellow
+      "⚠ partial · low-yield" tier.
+    - ``state.runtime_warnings`` entry surfaced in HTML responsibility panel.
+- **``Config.accept_low_yield: bool``** runtime field (not in YAML;
+  set only via CLI flag).
+- **``State.low_yield_override``** + **``State.low_yield_details``** fields.
+
+### Added (P3 — stage-1 actual-resolution probe)
+
+- **``ffprobe`` resolution probe** in stage 1 immediately after video
+  download. Stores actual ``(width, height)`` on
+  ``state.video.actual_resolution`` (string form, e.g. ``"480x270"``)
+  and ``state.video.actual_height`` (int). Distinct from the existing
+  ``resolution`` field which records the *requested* yt-dlp target.
+- **Low-resolution warning** when actual height < 720p: prominent yellow
+  console message + ``state.runtime_warnings`` entry recommending
+  ``--cookies-from-browser`` (1080p unlock) or ``--accept-low-yield``
+  (sanctioned exception). Surfaces *before* stage 3 burns 30+ vision-LLM
+  calls so the user knows what to expect.
+- ``video-actual-resolution`` key in ``report.md`` frontmatter when probed.
+
+### Changed
+
+- **``_check_extract_floors``** signature: added keyword-only
+  ``accept_low_yield: bool`` and ``state: State | None`` parameters.
+  Behaviour unchanged when called without these (strict raise path
+  preserved verbatim) — fully backward compatible with existing tests.
+- **Integrity callout** (``draft.py``): low-yield-override forces the
+  half-run ⚠️ template (was: only ``stages_skipped`` triggered it).
+- **HTML banner** (``render.py``): banner-class & suffix logic now reads
+  ``low-yield-override`` from frontmatter (not transient state) so a
+  third-party ``keynote-recap verify`` produces the same color tier.
+
+### Why
+
+Three distinct production failures (low-res B-station source,
+cinematic launch-event content, sparse-text product-launch keynotes)
+all hit the same wall: stage 3's hard floors are correct for typical
+developer-conference content but are mis-calibrated for the long tail.
+Previously the only "fix" was editing ``methodology.py`` — which AGENTS.md
+explicitly prohibits and which agents would do silently. v0.3.7 keeps
+the gate but adds a sanctioned, audit-trailed override path.
+
+### Bug fixes (v0.3.7)
+
+- **BUG-1 (tenacity retries 4xx errors)**: ``@retry`` decorators on both
+  backends now exclude ``AuthenticationError``, ``PermissionDeniedError``,
+  and ``BadRequestError`` via ``retry_if_not_exception_type``. A single
+  misconfigured API key previously wasted 3 × 8 ≈ 5 minutes on 24 retries.
+  Exception types from both ``openai`` and ``anthropic`` SDKs are covered
+  with fallback stubs when a particular SDK is not installed.
+- **BUG-2 (stage 2 cleanup deletes prior-run selected frames)**: When a
+  stage 3 rerun produced a different candidate set, ``segment.py``'s cleanup
+  deleted ``frames_raw/*.jpg`` files referenced by ``state.selected_frames``
+  from a previous pipeline run, causing ``FileNotFoundError`` in stage 3.
+  Fix: add selected-frame filenames to the ``keep`` set before unlinking.
+- **BUG-3 (read timeout too tight for non-streaming calls)**: ``httpx``
+  ``read`` timeout raised from 120s to ``min(total_s, 300s)``. Non-streaming
+  LLM calls with large prompts (27k input tokens) can take >120s to receive
+  the first response byte — ``read=120`` was triggering false-positive hang
+  detection. 300s is the empirical bridge; proper fix (stage 5 streaming)
+  will restore a tighter cap in v0.3.8.
+- **BUG-5 (gateway info_density diagnostic)**: ``extract.run()`` now computes
+  a full info_density distribution (min / p25 / median / p75 / max /
+  below_threshold_count) after all batches merge and stamps it into
+  ``state.extract_density_distribution`` + ``report.md`` frontmatter as
+  ``extract-density-distribution``. When median < 0.65, a
+  ``runtime_warning`` fires suggesting the gateway may be degrading image
+  quality or routing to a non-verified model. Runs at zero marginal cost
+  (no extra LLM calls).
+
 ## [0.3.6] — Full sanitization + F5 useful-ratio gate (2026-05-26)
 
 ### BREAKING (production footprint only, no API breakage)

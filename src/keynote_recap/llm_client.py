@@ -26,9 +26,35 @@ from typing import Any, Callable, TypeVar
 
 import httpx
 from openai import OpenAI
-from tenacity import retry, stop_after_attempt, wait_exponential
+from tenacity import retry, retry_if_not_exception_type, stop_after_attempt, wait_exponential
 
 from .config import LLMConfig
+
+# BUG-1: non-retryable 4xx exceptions — user/config errors must fail fast
+# instead of wasting time on tenacity retries. Fallback stubs ensure the
+# retry decorator compiles even when a particular SDK is not installed.
+try:
+    from anthropic import AuthenticationError as _AnthropicAuthError
+    from anthropic import BadRequestError as _AnthropicBadReq
+    from anthropic import PermissionDeniedError as _AnthropicPermError
+except ImportError:
+    _AnthropicAuthError = type("_AnthropicAuthError", (Exception,), {})
+    _AnthropicBadReq = type("_AnthropicBadReq", (Exception,), {})
+    _AnthropicPermError = type("_AnthropicPermError", (Exception,), {})
+
+try:
+    from openai import AuthenticationError as _OpenAIAuthError
+    from openai import BadRequestError as _OpenAIBadReq
+    from openai import PermissionDeniedError as _OpenAIPermError
+except ImportError:
+    _OpenAIAuthError = type("_OpenAIAuthError", (Exception,), {})
+    _OpenAIBadReq = type("_OpenAIBadReq", (Exception,), {})
+    _OpenAIPermError = type("_OpenAIPermError", (Exception,), {})
+
+_NON_RETRYABLE = (
+    _AnthropicAuthError, _AnthropicPermError, _AnthropicBadReq,
+    _OpenAIAuthError, _OpenAIPermError, _OpenAIBadReq,
+)
 
 
 # p14: granular httpx timeout to prevent half-dead TCP connections from
@@ -43,10 +69,24 @@ from .config import LLMConfig
 # ``timeout`` (overall) stays bound to ``cfg.timeout_s`` so legitimately
 # long generations (final report draft, outline) keep their full budget.
 def _build_httpx_timeout(total_s: int) -> httpx.Timeout:
+    # BUG-3 (v0.3.7): read timeout caps at 300s as a short-term bridge.
+    #
+    # In non-streaming calls, httpx ``read`` = wall-clock wait for the
+    # first response byte — NOT inter-chunk gap.  Logically separated
+    # from the overall ``timeout_s`` (which preserves the config contract
+    # for long generations).
+    #
+    # 300s is the empirical upper bound: a gateway backend that needs
+    # longer than 300s to generate a response is likely mid-stream-stalled
+    # (the original scenario the hang detector was designed for).  The
+    # proper fix is streaming mode (stage 5 → ``messages.stream()``),
+    # where ``read`` genuinely becomes inter-chunk gap and 120s is
+    # abundant.
+    cap = min(float(total_s), 300.0)
     return httpx.Timeout(
         timeout=float(total_s),  # overall budget — preserves config contract
         connect=10.0,             # TCP handshake
-        read=120.0,               # between-bytes idle (hang detector)
+        read=cap,                 # between-bytes idle (hang detector; 300s bridge)
         write=30.0,               # request body upload
         pool=10.0,                # connection pool acquisition
     )
@@ -147,7 +187,11 @@ class _OpenAIBackend(_Backend):
             timeout=_build_httpx_timeout(cfg.timeout_s),  # p14
         )
 
-    @retry(stop=stop_after_attempt(3), wait=wait_exponential(min=2, max=30))
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(min=2, max=30),
+        retry=retry_if_not_exception_type(_NON_RETRYABLE),
+    )
     def chat(
         self,
         *,
@@ -179,7 +223,11 @@ class _OpenAIBackend(_Backend):
         usage = resp.usage
         return text, getattr(usage, "prompt_tokens", 0), getattr(usage, "completion_tokens", 0)
 
-    @retry(stop=stop_after_attempt(3), wait=wait_exponential(min=2, max=30))
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(min=2, max=30),
+        retry=retry_if_not_exception_type(_NON_RETRYABLE),
+    )
     def chat_with_images(
         self,
         *,
@@ -303,7 +351,11 @@ class _AnthropicBackend(_Backend):
 
     # ── text chat ──────────────────────────────────────────────────────
 
-    @retry(stop=stop_after_attempt(3), wait=wait_exponential(min=2, max=30))
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(min=2, max=30),
+        retry=retry_if_not_exception_type(_NON_RETRYABLE),
+    )
     def chat(
         self,
         *,
@@ -350,7 +402,11 @@ class _AnthropicBackend(_Backend):
 
     # ── vision chat ────────────────────────────────────────────────────
 
-    @retry(stop=stop_after_attempt(3), wait=wait_exponential(min=2, max=30))
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(min=2, max=30),
+        retry=retry_if_not_exception_type(_NON_RETRYABLE),
+    )
     def chat_with_images(
         self,
         *,

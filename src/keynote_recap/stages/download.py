@@ -48,6 +48,31 @@ def run(state: State, cfg: Config) -> State:
     video_path = _download_video(state.url, output_dir, cfg.video.resolution)
     console.print(f"  Video:    {video_path}")
 
+    # v0.3.7 P3: probe actual resolution. yt-dlp may fall back to a lower
+    # quality format (Bilibili non-premium = 480p, region locks, etc.).
+    # Surface this BEFORE stage 3 burns 30+ vision-LLM calls — low-res
+    # input causes uniformly low info_density scores which then trip the
+    # v0.3.6 F5 useful_ratio gate. ffprobe is part of ffmpeg (already a
+    # hard dep), so this is free.
+    actual_w, actual_h = _probe_resolution(video_path)
+    actual_resolution_str = f"{actual_w}x{actual_h}" if actual_h else ""
+    if actual_h:
+        console.print(f"  Probed:   {actual_w}x{actual_h} (actual)")
+        if actual_h < 720:
+            warn = (
+                f"Downloaded video is {actual_w}x{actual_h} (< 720p). "
+                f"Vision LLM tends to assign uniformly low info_density to "
+                f"low-res frames — stage 3 may trip useful_ratio < 50% even "
+                f"on legitimate content. Recommended: re-download with "
+                f"`--cookies-from-browser chrome` (or your browser) to "
+                f"unlock 1080p. If this is the best available source, pass "
+                f"`--accept-low-yield` to stage 3 (report will carry "
+                f"low-yield-override stamp)."
+            )
+            console.print(f"  [bold yellow]\u26a0 low-resolution warning:[/] {warn}")
+            if warn not in state.runtime_warnings:
+                state.runtime_warnings.append(warn)
+
     # 3. subtitles
     subtitle_path, subtitle_lang, transcript = "", "", ""
 
@@ -105,6 +130,8 @@ def run(state: State, cfg: Config) -> State:
         uploader=uploader,
         duration_s=duration_s,
         resolution=cfg.video.resolution,
+        actual_resolution=actual_resolution_str,
+        actual_height=actual_h,
         video_path=str(video_path),
         subtitle_path=str(subtitle_path) if subtitle_path else "",
         subtitle_lang=subtitle_lang,
@@ -252,6 +279,41 @@ def _extract_plaintext(subtitle_path: Path) -> str:
         line = re.sub(r"\{[^}]+\}", "", line)
         lines.append(line)
     return "\n".join(lines)
+
+
+def _probe_resolution(video_path: Path) -> tuple[int, int]:
+    """v0.3.7 P3: probe (width, height) of downloaded video via ffprobe.
+
+    Returns ``(0, 0)`` if ffprobe is missing or fails — non-fatal because
+    the resolution probe is advisory (warns about likely-low-yield runs).
+
+    Streams the first video stream's coded dimensions; for hardware-encoded
+    sources these match the pixel dimensions seen by the vision LLM after
+    ffmpeg sampling.
+    """
+    try:
+        r = subprocess.run(
+            [
+                "ffprobe", "-v", "error",
+                "-select_streams", "v:0",
+                "-show_entries", "stream=width,height",
+                "-of", "csv=s=x:p=0",
+                str(video_path),
+            ],
+            capture_output=True, text=True, timeout=15,
+        )
+    except (FileNotFoundError, subprocess.SubprocessError, OSError):
+        return (0, 0)
+    if r.returncode != 0:
+        return (0, 0)
+    out = (r.stdout or "").strip()
+    m = re.match(r"^(\d+)x(\d+)$", out)
+    if not m:
+        return (0, 0)
+    try:
+        return (int(m.group(1)), int(m.group(2)))
+    except ValueError:
+        return (0, 0)
 
 
 def parse_srt(subtitle_path: Path) -> list[dict]:

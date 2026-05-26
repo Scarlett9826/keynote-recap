@@ -413,14 +413,19 @@ def _build_top_banner(frontmatter_meta: dict) -> str:
         return False
 
     unverified = _in_skipped(1) or _in_skipped(4)
-    half_run = bool(skipped) and not unverified
+    # v0.3.7 P2: low-yield-override forces banner to half-run yellow.
+    # Reading the frontmatter directly is the right contract here — the
+    # frontmatter is what content-sha256 covers; render must not rely on
+    # transient state that's invisible to a third party who re-runs verify.
+    low_yield = bool(frontmatter_meta.get("low-yield-override", False))
+    half_run = (bool(skipped) or low_yield) and not unverified
 
     if unverified:
         cls = "recap-banner recap-banner-unverified"
         suffix = "✗ unverified"
     elif half_run:
         cls = "recap-banner recap-banner-half-run"
-        suffix = "⚠ partial"
+        suffix = "⚠ partial · low-yield" if low_yield else "⚠ partial"
     else:
         cls = "recap-banner"
         suffix = "verified ✓"

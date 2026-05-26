@@ -111,6 +111,17 @@ class Config(BaseModel):
 
     # ─── runtime overrides (not in YAML) ───
     debug: bool = False
+    # v0.3.7 P2: sanctioned soft-floor escape hatch. Set via
+    # ``--accept-low-yield`` CLI flag. When True, stage 3 hard-floor
+    # breaches (count < EXTRACT_FINAL_COUNT_MIN or useful_ratio <
+    # EXTRACT_USEFUL_RATIO_MIN) are converted from fatal abort into a
+    # logged override that gets stamped into report frontmatter,
+    # integrity callout, and HTML banner. AGENTS.md prohibits *editing*
+    # methodology constants; this flag is the project-sanctioned way to
+    # ship a report that misses the floor (e.g. low-res B station source,
+    # cinematic content with sparse text frames). The override is always
+    # visible in the published artifact — agents cannot game it silently.
+    accept_low_yield: bool = False
 
 
 # ──────────────────────────────────────────────────────────────────────────────

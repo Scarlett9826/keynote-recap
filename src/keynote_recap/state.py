@@ -18,7 +18,16 @@ class VideoMeta(BaseModel):
     title: str = ""
     uploader: str = ""
     duration_s: float = 0.0
-    resolution: str = ""
+    resolution: str = ""              # requested resolution (yt-dlp -f target)
+    # v0.3.7 P3: actual measured resolution after download. Populated by
+    # ffprobe in stage 1 — distinct from ``resolution`` (the *requested*
+    # target) because the source may not have a 1080p variant available.
+    # Used by stage 1 preflight to warn when downloaded height < 720
+    # (low-res inputs cause vision LLM to assign uniformly low info_density,
+    # which then trips the v0.3.6 F5 useful_ratio gate). Empty string =
+    # ffprobe missing or probe failed (non-fatal).
+    actual_resolution: str = ""
+    actual_height: int = 0            # parsed numeric height (e.g. 480, 720, 1080)
     video_path: str = ""              # downloaded mp4
     audio_path: str = ""              # extracted audio (if needed)
     subtitle_path: str = ""           # .srt or .vtt
@@ -181,8 +190,29 @@ class State(BaseModel):
     # private videos with manual transcript). Set via --transcript-file.
     transcript_override_path: str = ""
 
+    # v0.3.7 P2: sanctioned soft-floor escape hatch.
+    # When --accept-low-yield is passed, stage 3 floor breaches no longer
+    # raise ExtractFloorError — instead the breach is recorded here and
+    # surfaced in:
+    #   - state.runtime_warnings   (HTML responsibility panel)
+    #   - integrity-callout ⚠ block in report.md
+    #   - frontmatter ``low-yield-override: true`` + actual numbers
+    #   - HTML banner downgrades to half-run (yellow) tier
+    # This preserves the "agent cannot silently game the gate" property
+    # (every artifact carries the override mark) while letting legitimate
+    # low-resolution / cinematic-style content proceed.
+    low_yield_override: bool = False
+    low_yield_details: dict[str, Any] = Field(default_factory=dict)
+
     # ─── Stage 6: render ───
     report_html_path: str = ""
+
+    # ─── BUG-5: extract-stage density distribution (v0.3.7) ───
+    # Populated by ``extract.run()`` after all batches are merged; consumed
+    # by ``draft._assemble_report()`` for frontmatter stamping. Fields:
+    # min, p25, median, p75, max, below_threshold_count. Empty dict when
+    # not yet computed (e.g. --start-stage bypasses extract).
+    extract_density_distribution: dict[str, float | int] = Field(default_factory=dict)
 
     # ─── Cost tracking ───
     cost_entries: list[CostEntry] = Field(default_factory=list)

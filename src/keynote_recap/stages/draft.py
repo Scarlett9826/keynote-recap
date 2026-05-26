@@ -175,7 +175,7 @@ def _write_body(state: State, cfg: Config, client: LLMClient, outline: str) -> s
         system=system,
         user=user,
         temperature=0.5,
-        max_tokens=16000,
+        max_tokens=12000,
     )
     track(state, stage="draft_body", model=cfg.llm.models.draft,
           input_tokens=in_t, output_tokens=out_t)
@@ -183,8 +183,19 @@ def _write_body(state: State, cfg: Config, client: LLMClient, outline: str) -> s
 
 
 def _build_user_for_body(state: State, outline: str) -> str:
-    # Use full transcript: body must accurately quote all sections
-    transcript = state.video.transcript or ""
+    # Use full transcript: body must accurately quote all sections.
+    # Truncate very long transcripts (~ 40000 char cap) to keep stage 5.2
+    # input within gateway timeout budget. v0.3.7 keeps the cap; longer
+    # term, sectioned chunking aligned with outline is the right fix
+    # (P4 in CHANGELOG analysis).
+    _raw_transcript = state.video.transcript or ""
+    if len(_raw_transcript) > 40000:
+        transcript = (
+            _raw_transcript[:40000]
+            + "\n\n[... 字幕已截断，仅保留前 40000 字符以控制长度 ...]"
+        )
+    else:
+        transcript = _raw_transcript
     research_notes = ""
     if state.research_notes_path:
         try:
@@ -363,6 +374,21 @@ def _assemble_report(title: str, callout: str, body: str, state, cfg) -> str:
         "model-draft": state.models_used.get("draft", "unknown"),
         "model-draft-tier": state.model_tiers.get("draft", "unknown"),
     }
+    # v0.3.7 P2: stamp low-yield-override into frontmatter so render banner
+    # downgrades to half-run yellow tier and downstream verifiers can see
+    # that the report shipped under a sanctioned floor breach.
+    if getattr(state, "low_yield_override", False):
+        meta["low-yield-override"] = True
+        meta["low-yield-details"] = dict(state.low_yield_details or {})
+    # v0.3.7 P3: stamp downloaded video resolution (when probed). Helps
+    # downstream readers correlate "low extraction yield" with the input
+    # quality that caused it.
+    if state.video and state.video.actual_height:
+        meta["video-actual-resolution"] = state.video.actual_resolution
+    # BUG-5: stamp density distribution so readers can assess gateway quality.
+    dd = getattr(state, "extract_density_distribution", {}) or {}
+    if dd:
+        meta["extract-density-distribution"] = dict(dd)
     return attach_frontmatter(meta, body_text)
 
 
@@ -394,11 +420,13 @@ def _build_integrity_callout(state, cfg) -> str:
     extract_model = state.models_used.get("extract", "unknown")
     extract_tier = state.model_tiers.get("extract", "unknown")
     n_citations = len(state.verified_facts) if state.verified_facts else 0
+    low_yield = bool(getattr(state, "low_yield_override", False))
 
     is_healthy = (
         not skipped
         and extract_tier == "verified_multimodal"
         and n_citations >= 8
+        and not low_yield  # v0.3.7 P2: low-yield override forces half-run
     )
 
     if is_healthy:
@@ -429,6 +457,17 @@ def _build_integrity_callout(state, cfg) -> str:
         cannot_verify.append("事实查证（引用 ≥ 8）")
     if extract_tier != "verified_multimodal":
         cannot_verify.append("视觉理解质量（当前模型不在 verified 列表）")
+    # v0.3.7 P2: low-yield-override means stage 3 floors were not met.
+    # Surface this as an explicit "cannot verify" item so the artifact
+    # records what the override traded away.
+    if low_yield:
+        d = state.low_yield_details or {}
+        cannot_verify.append(
+            f"图像产出量门槛（低产出豁免：选中 {d.get('selected_count', '?')} 帧 / "
+            f"地板 {d.get('count_floor', '?')}，"
+            f"useful_ratio {(d.get('useful_ratio') or 0):.0%} / "
+            f"地板 {(d.get('useful_ratio_floor') or 0):.0%}）"
+        )
 
     cannot_line = "、".join(cannot_verify) if cannot_verify else "（无）"
 
@@ -444,8 +483,16 @@ def _build_integrity_callout(state, cfg) -> str:
         f"> - 跳过：{skipped_line}",
         f"> - 完整：stage {completed_line}",
         f"> - 模型：{extract_model}（{tier_zh}）",
-        f"> - 本报告无法验证以下方法论项：{cannot_line}",
     ]
+    if low_yield:
+        d = state.low_yield_details or {}
+        lines.append(
+            f"> - **低产出豁免（--accept-low-yield）**：选中 "
+            f"{d.get('selected_count', '?')} 帧（地板 {d.get('count_floor', '?')}），"
+            f"useful_ratio {(d.get('useful_ratio') or 0):.0%}（地板 "
+            f"{(d.get('useful_ratio_floor') or 0):.0%}）"
+        )
+    lines.append(f"> - 本报告无法验证以下方法论项：{cannot_line}")
     return "\n".join(lines)
 
 

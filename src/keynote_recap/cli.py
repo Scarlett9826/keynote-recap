@@ -106,6 +106,18 @@ def main() -> None:
          "sanctioned escape hatch.",
 )
 @click.option(
+    "--accept-low-yield",
+    is_flag=True,
+    default=False,
+    help="Sanctioned escape for stage 3 hard floors (count < 35 or "
+         "useful_ratio < 50%). Use when the source is legitimately "
+         "low-info (low-res / cinematic / sparse-text). The report is "
+         "still produced, but every artifact carries a 'low-yield-override' "
+         "stamp (frontmatter + integrity callout + yellow HTML banner). "
+         "v0.3.7. AGENTS.md prohibits editing methodology constants — "
+         "use this flag instead.",
+)
+@click.option(
     "--debug",
     is_flag=True,
     help="Enable debug logging.",
@@ -122,6 +134,7 @@ def recap(
     keep_video: bool,
     checkpoint: bool,
     transcript_file: Path | None,
+    accept_low_yield: bool,
     debug: bool,
 ) -> None:
     """Run full 7-stage pipeline on a video URL.
@@ -145,6 +158,9 @@ def recap(
     if tier is not None:
         cfg.draft.tier = tier
 
+    # v0.3.7 P2: propagate --accept-low-yield to runtime config.
+    cfg.accept_low_yield = accept_low_yield
+
     if output_dir is None:
         from .util import slugify_url
         output_dir = Path("runs") / slugify_url(url)
@@ -157,6 +173,11 @@ def recap(
     console.print(f"[dim]LLM:        {cfg.llm.models.draft}[/]")
     console.print(f"[dim]Draft tier: {cfg.draft.tier}[/]")
     console.print(f"[dim]Stages:     {start_stage} → {end_stage}[/]")
+    if cfg.accept_low_yield:
+        console.print(
+            "[yellow]⚠ accept-low-yield: stage 3 hard floors converted to "
+            "soft override — report will carry low-yield stamp[/]"
+        )
     console.print()
 
     # Preflight env check (M7 / v0.2.2): catches missing ffmpeg, yt-dlp,

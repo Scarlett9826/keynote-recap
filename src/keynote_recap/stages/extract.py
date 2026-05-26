@@ -305,6 +305,22 @@ def run(state: State, cfg: Config, retry_context: list[str] | None = None) -> St
 
     selected.sort(key=lambda f: f.timestamp_s)
 
+    # ─── BUG-5: compute density distribution for diagnostics ───
+    # Stored on state so draft.py can stamp it into frontmatter.
+    state.extract_density_distribution = _compute_density_distribution(
+        selected, M.EXTRACT_INFO_DENSITY_MIN,
+    )
+    dd = state.extract_density_distribution
+    if dd and dd.get("median", 1.0) < 0.65:
+        state.runtime_warnings.append(
+            f"info_density distribution: median={dd.get('median', '?'):.2f} "
+            f"p25={dd.get('p25', '?'):.2f} max={dd.get('max', '?'):.2f} "
+            f"({dd.get('below_threshold_count', 0)}/{dd.get('count', 0)} "
+            f"below {M.EXTRACT_INFO_DENSITY_MIN:.0%}). "
+            f"Low median suggests gateway is degrading image quality or "
+            f"using a non-verified model — consider switching model route."
+        )
+
     # ─── v0.3.1 A1/A3: hard floor gate (count + useful ratio) ───
     # v0.3.6 F5: replaced live_ratio with useful_ratio (info_density >= 0.70)
     # because legitimate keynotes have 60%+ official renders / CGI inserts.
@@ -315,7 +331,19 @@ def run(state: State, cfg: Config, retry_context: list[str] | None = None) -> St
         selected,
         count_min=M.EXTRACT_FINAL_COUNT_MIN,
         useful_ratio_min=M.EXTRACT_USEFUL_RATIO_MIN,
+        accept_low_yield=getattr(cfg, "accept_low_yield", False),
+        state=state,
     )
+    if state.low_yield_override:
+        # v0.3.7 P2: surface override prominently so user sees it during run.
+        d = state.low_yield_details
+        console.print(
+            f"  [bold yellow]\u26a0 low-yield-override accepted[/]: "
+            f"selected={d.get('selected_count')} (floor {d.get('count_floor')}), "
+            f"useful_ratio={d.get('useful_ratio', 0):.0%} "
+            f"(floor {d.get('useful_ratio_floor', 0):.0%}). "
+            f"Report will carry low-yield stamp."
+        )
 
     # Move selected frames to frames/ for the final report
     final_dir = output_dir / "frames"
@@ -676,10 +704,39 @@ def _enforce_density_floor(
     return kept, dropped
 
 
+def _compute_density_distribution(
+    frames: list[SelectedFrame],
+    threshold: float = M.EXTRACT_INFO_DENSITY_MIN,
+) -> dict[str, float | int]:
+    """BUG-5: compute min/p25/median/p75/max info_density stats.
+
+    Returns empty dict when ``frames`` is empty. The ``count`` field
+    matches ``len(frames)`` for easy downstream ratio calculation.
+    Result is stored on ``state.extract_density_distribution`` and
+    surfaced in report frontmatter.
+    """
+    densities = sorted([f.info_density for f in frames if f.info_density is not None])
+    if not densities:
+        return {}
+    n = len(densities)
+    return {
+        "count": n,
+        "min": densities[0],
+        "p25": densities[n // 4],
+        "median": densities[n // 2] if n % 2 else (densities[n // 2 - 1] + densities[n // 2]) / 2,
+        "p75": densities[3 * n // 4],
+        "max": densities[-1],
+        "below_threshold_count": sum(1 for d in densities if d < threshold),
+    }
+
+
 def _check_extract_floors(
     selected: list[SelectedFrame],
     count_min: int = M.EXTRACT_FINAL_COUNT_MIN,
     useful_ratio_min: float = M.EXTRACT_USEFUL_RATIO_MIN,
+    *,
+    accept_low_yield: bool = False,
+    state: State | None = None,
 ) -> None:
     """v0.3.1 A1/A3: raise ExtractFloorError if hard floors fail.
 
@@ -697,16 +754,66 @@ def _check_extract_floors(
 
     Raising ExtractFloorError signals to pipeline retry orchestration that
     stage 3 should be re-run with last-failures injected into the prompt.
+
+    v0.3.7 P2 — sanctioned soft-floor escape:
+        When ``accept_low_yield=True`` (driven by ``--accept-low-yield``):
+        - breach does NOT raise; instead it records the breach details
+          on ``state.low_yield_details`` and sets ``state.low_yield_override = True``
+        - a runtime warning is appended so the HTML responsibility panel
+          surfaces it
+        - frontmatter / integrity callout / banner downgrade are handled
+          by render-side code reading these state fields
+        - ``state`` MUST be passed when ``accept_low_yield=True``;
+          otherwise we fall back to the strict raise (defensive).
+        This is the project-sanctioned alternative to editing methodology
+        constants (which AGENTS.md prohibits). Every artifact carries the
+        low-yield stamp — the override cannot be hidden.
     """
     n = len(selected)
+    n_useful = sum(1 for f in selected if f.info_density >= M.EXTRACT_INFO_DENSITY_MIN)
+    ratio = n_useful / n if n else 0.0
+
+    breaches: list[str] = []
+    if n < count_min:
+        breaches.append(
+            f"count {n} < {count_min} (EXTRACT_FINAL_COUNT_MIN)"
+        )
+    if ratio < useful_ratio_min:
+        breaches.append(
+            f"useful_ratio {ratio:.0%} < {useful_ratio_min:.0%} "
+            f"({n_useful}/{n} info_density >= {M.EXTRACT_INFO_DENSITY_MIN:.0%})"
+        )
+
+    if not breaches:
+        return  # all floors pass; normal path
+
+    # v0.3.7 P2: sanctioned override path — record and continue.
+    if accept_low_yield and state is not None:
+        state.low_yield_override = True
+        state.low_yield_details = {
+            "selected_count": n,
+            "count_floor": count_min,
+            "useful_count": n_useful,
+            "useful_ratio": round(ratio, 4),
+            "useful_ratio_floor": useful_ratio_min,
+            "breaches": breaches,
+        }
+        msg = (
+            "Stage 3 floor breach accepted under --accept-low-yield: "
+            + "; ".join(breaches)
+            + ". Report carries low-yield-override stamp."
+        )
+        if msg not in state.runtime_warnings:
+            state.runtime_warnings.append(msg)
+        return
+
+    # Strict path — original v0.3.1 behavior preserved verbatim.
     if n < count_min:
         raise ExtractFloorError(
             f"selected_frames count {n} < {count_min} "
             f"(EXTRACT_FINAL_COUNT_MIN). Vision LLM rejected too aggressively; "
             f"retry will inject 'select more frames' directive."
         )
-    n_useful = sum(1 for f in selected if f.info_density >= M.EXTRACT_INFO_DENSITY_MIN)
-    ratio = n_useful / n if n else 0.0
     if ratio < useful_ratio_min:
         raise ExtractFloorError(
             f"useful ratio {ratio:.0%} < {useful_ratio_min:.0%} "

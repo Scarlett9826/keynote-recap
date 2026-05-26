@@ -89,7 +89,7 @@ your-vendor/claude-opus-4-7       (Anthropic, 200K ctx, vision ✓)
 your-vendor/claude-haiku-4-5      (Anthropic, 200K ctx, vision ✓)
 ```
 
-注意 `ppio/` 前缀。用户一开始 config.yaml 配的是 `pa/claude-sonnet-4-6`（缺前缀）+ 走 `/v1` 路径，两处都错。新版要让用户能干净地改 config 直接 work。
+注意 `your-vendor/` 前缀。用户一开始 config.yaml 配的是 `pa/claude-sonnet-4-6`（缺前缀）+ 走 `/v1` 路径，两处都错。新版要让用户能干净地改 config 直接 work。
 
 ### 实测 vision payload（这是 ground truth）
 
@@ -121,7 +121,7 @@ anthropic-version: 2023-06-01
   "id": "msg_bdrk_...",
   "type": "message",
   "role": "assistant",
-  "content": [{"type": "text", "text": "**ACME17 Max发布会**：展示其屏幕清晰度媲美2K..."}],
+  "content": [{"type": "text", "text": "**ACME Phone Pro 发布会**：展示其屏幕清晰度媲美2K..."}],
   "stop_reason": "end_turn",
   "usage": {
     "input_tokens": 585,
@@ -133,7 +133,7 @@ anthropic-version: 2023-06-01
 ```
 
 注意三件事：
-1. response 里 model 字段会回成 `pa/claude-sonnet-4-6`（去掉 `ppio/` 前缀），这是 gateway 行为，不影响功能。
+1. response 里 model 字段会回成 `pa/claude-sonnet-4-6`（去掉 `your-vendor/` 前缀），这是 gateway 行为，不影响功能。
 2. usage 里有 `cache_creation_input_tokens` / `cache_read_input_tokens`——anthropic prompt caching feature。今晚不用管，但 cost_tracker 别因为这俩字段崩。
 3. content 是个 list、第一个 element type=text，文本在 `.text`——和 OpenAI `choices[0].message.content` 不一样。
 
@@ -502,7 +502,7 @@ llm:
 └── state.json             92 KB (last_completed_stage = 2.0)
 ```
 
-视频是 https://www.bilibili.com/video/BVxxxxxxxxxx/（ACME 17 Max 发布会）。stage 1-2 已完成。stage 3 起从未跑成功过。
+视频是 https://www.bilibili.com/video/BVxxxxxxxxxx/（ACME Phone Max 发布会）。stage 1-2 已完成。stage 3 起从未跑成功过。
 
 ### config 设置
 
@@ -516,7 +516,7 @@ llm:
   timeout_s: 600
   max_retries: 3
   models:
-    extract: your-vendor/claude-sonnet-4-6    # ← 加 ppio/ 前缀
+    extract: your-vendor/claude-sonnet-4-6    # ← 加 your-vendor/ 前缀
     research: your-vendor/claude-sonnet-4-6
     draft: your-vendor/claude-sonnet-4-6      # 用户说全 sonnet 跑
     verify: your-vendor/claude-sonnet-4-6
@@ -549,7 +549,7 @@ OPENAI_API_KEY="<让用户告诉你或从此前对话 transcript 里取>" \
 - `output/acme-launch-2026/report.md` 存在、有 frontmatter（version + content-sha256）
 - `output/acme-launch-2026/report.html` 存在、4-8 MB
 - 跑 `keynote-recap verify output/acme-launch-2026/report.html` 应输出 `OK: ...`
-- 用户能 open report.html 看到顶部橙 banner、内容是关于ACME 17 Max
+- 用户能 open report.html 看到顶部橙 banner、内容是关于 ACME 17 Max
 
 如果 stage 3 失败，**先看错误信息**：
 - 如果是协议问题（headers / endpoint path），重看 §3 的 ground truth curl
@@ -576,7 +576,7 @@ git status -s
 # 4. 跑 §5 真产出验证
 # 必须用户在场、用户提供 key
 # 必须 verify 输出 OK
-# 必须用户 open html 确认 banner 在、内容关于ACME
+# 必须用户 open html 确认 banner 在、内容关于 ACME
 
 # 5. commit
 git add -A
@@ -632,7 +632,7 @@ git push origin v0.3.0
 | anthropic SDK 需要 base_url 自定义吗 | 是。`Anthropic(api_key=..., base_url=cfg.base_url)`，覆盖默认 api.anthropic.com。 |
 | anthropic SDK 用 timeout 怎么传 | `Anthropic(timeout=cfg.timeout_s)`，httpx 风格。 |
 | messages 里有 system role 怎么办 | Anthropic 不接受 messages 列表里的 system role。要把 system 内容拎出来作为 top-level `system` 参数传。我已经在 §4.2 代码示例里写了。 |
-| 实测 anthropic 返回 model 字段会丢 ppio/ 前缀 | 不影响功能，gateway 行为，忽略。 |
+| 实测 anthropic 返回 model 字段会丢 your-vendor/ 前缀 | 不影响功能，gateway 行为，忽略。 |
 | 用户问能不能也加 google gemini provider | 不是 v0.3.0 范围。回答"v0.3.1 backlog"。 |
 | 用户问能不能打成 skill 让 agent 直接跑 | 用户已明确 "产出质量稳定最重要"，skill-only 路径会牺牲质量稳定性。skill 作为"调 CLI 的薄入口"是 v0.3.1+ 候选，今晚不做。 |
 | 用户的 key 又被贴出来 | 不要把 key 写入任何文件。临时 env var 用法见 §5。建议用户轮换 key（已在前面对话说过）。 |
@@ -643,7 +643,7 @@ git push origin v0.3.0
 
 ## 9. 用户偏好速查（不要违反）
 
-- 公开仓库铁律：**禁** your-company/ACME/your-gateway/bytedance 等公司词及 PII 出现在任何提交文件里。用 `your-gateway.example.com` 占位。
+- 公开仓库铁律：**禁** your-company/your-gateway/bytedance 等公司词及 PII 出现在任何提交文件里。用 `your-gateway.example.com` 占位。
 - commit 风格：`feat(p<N>): <数字>` 或 `fix(p<N>): <说明>`。这次是 p11。
 - 远程写之前用 question tool 确认（git push / tag 等）。
 - 文风零容忍：**禁**「巨大/显著/革命性/让我们/不仅仅是/总而言之/惊人/飞跃」等。CHANGELOG / README 写作里也要遵守。
@@ -664,7 +664,7 @@ git push origin v0.3.0
 - [ ] LLMClient 公开 API 改了吗？没改，签名一致，stages 里不用改。
 - [ ] 测试目标多少？132+ passed（v0.2.5.1 是 124，加 8 个新测试）。
 - [ ] 用户的 key 怎么处理？临时 env var，不写文件，建议用户轮换。
-- [ ] 跑通真产出的视频是哪个？BVxxxxxxxxxx（ACME 17 Max 发布会），output_dir = `acme-launch-2026`，stage 1-2 已缓存。
+- [ ] 跑通真产出的视频是哪个？BVxxxxxxxxxx（ACME Phone Max 发布会），output_dir = `acme-launch-2026`，stage 1-2 已缓存。
 
 如果有一项答不上来，回去再读对应章节。
 

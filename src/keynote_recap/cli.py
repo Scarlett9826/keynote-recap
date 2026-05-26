@@ -215,7 +215,10 @@ def _preflight_env(cfg, output_dir: Path) -> list[str] | None:
     from . import preflight_env as pe
 
     api_key_env = cfg.llm.api_key_env
-    checks = pe.run_all_checks(output_dir=output_dir, api_key_env=api_key_env)
+    base_url = cfg.llm.base_url or ""
+    checks = pe.run_all_checks(
+        output_dir=output_dir, api_key_env=api_key_env, base_url=base_url,
+    )
 
     console.print("[bold]Preflight: environment check[/]")
     for c in checks:
@@ -261,8 +264,8 @@ def _preflight_models(cfg) -> tuple[bool, list[str]]:
     """Print a model-capability summary; return (proceed, warnings).
 
     v0.3.2: ``UNKNOWN`` is downgraded from hard abort to advisory warning.
-    Rationale: gateway-prefixed model names (``your-company-llm-anthropic/ppio/
-    pa/claude-opus-4-7`` etc.) and SDK-injected proxy routes generated a
+    Rationale: gateway-prefixed model names (``your-gateway-anthropic/your-vendor/
+    claude-opus-4-7`` etc.) and SDK-injected proxy routes generated a
     flood of false-positive aborts in agent-host setups. The substring
     matcher in ``preflight.py`` already recognises real claude/gemini/
     gpt-4o under any prefix; what remains as ``UNKNOWN`` is genuinely
@@ -607,7 +610,7 @@ def recap_and_verify(ctx: click.Context, url: str, recap_args: tuple[str, ...]) 
     Example:
 
         keynote-recap recap-and-verify https://www.bilibili.com/video/BV1xxx \\
-            --output-dir ./out/your-company-2026 --keep-video
+            --output-dir ./out/acme-launch-2026 --keep-video
     """
     # Step 1: invoke the existing `recap` command via Click's invoke.
     # We pass the URL and forward all extra args. If recap exits non-zero,

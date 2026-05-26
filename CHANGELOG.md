@@ -4,6 +4,83 @@ All notable changes to **keynote-recap** are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.6] — Full sanitization + F5 useful-ratio gate (2026-05-26)
+
+### BREAKING (production footprint only, no API breakage)
+
+- **Git history rewrite** follows this release. All tracked files have
+  had company-internal strings replaced with neutral placeholders
+  (``your-company``, ``your-gateway``, ``ACME``). This affects every
+  commit in the 49-commit history; all 15 tags will be recreated. After
+  force-push, any existing clone will be irreconcilable with the new
+  origin. If you have a local fork, reclone after the force-push.
+
+### Changed (F5 — metric replacement)
+
+- **``EXTRACT_LIVE_RATIO_MIN`` removed, ``EXTRACT_USEFUL_RATIO_MIN``
+  added** in ``methodology.py``. The old gate counted frames where the
+  Vision LLM marked ``is_live=True``; this was fundamentally wrong
+  because legitimate keynote videos (product launches, developer
+  conferences) routinely contain 60%+ official marketing renders / CGI
+  inserts interspersed with live footage. The new metric counts frames
+  where ``info_density >= 0.70`` (already available from every frame).
+  A "useful" frame carries non-trivial information regardless of
+  whether the camera was on stage or playing a pre-recorded insert.
+  The numerical floor stays 0.50 (half of frames must be useful).
+
+- **``_check_extract_floors``** (``extract.py``): parameter renamed
+  from ``live_ratio_min`` to ``useful_ratio_min``; internally computes
+  ``sum(f.info_density >= EXTRACT_INFO_DENSITY_MIN for f in selected)``
+  instead of ``sum(f.is_live for f in selected)``. Error message updated.
+
+- **``check_image_source_mix``** (``verify.py``): same metric change.
+  Return dict keys: ``live``→``useful``, ``live_ratio``→``useful_ratio``,
+  ``live_ratio_min``→``useful_ratio_min``, ``non_live``→``not_useful``.
+  Stage 5.5 rendering updated.
+
+- **``pipeline.py``**: hardcoded ``"live ratio < 50%"`` message → ``"useful ratio < 50%"``.
+
+- **``render.py``**: report template ``live ratio 硬门`` → ``useful ratio 硬门（v0.3.6）``.
+
+### Added
+
+- **``preflight_env.check_anthropic_base_url``**: detects ``base_url``
+  ending with ``/v1`` when provider is ``anthropic-native`` (the SDK
+  auto-appends ``/v1/messages``; ``/v1/v1/messages`` triggers 404).
+  Wired into ``run_all_checks`` and the ``doctor`` CLI.
+
+- **217 tests** (was 216). ``test_v036_useful_ratio_hard_floor_50pct``
+  and ``test_v036_useful_ratio_constant_centralized`` replace the old
+  ``v031_audit_A3`` and ``v031_audit_E2``. All existing ``live_ratio``
+  test fixtures migrated to use ``info_density`` for useful-ratio gating.
+
+### Repository hygiene (secrets / PII scrub)
+
+- **All tracked files sanitized**: ``your-gateway`` → ``your-gateway``,
+  ``your-company`` → ``your-company``, ``ACME`` → ``ACME``, ``ppio/pa/claude-*``
+  → ``your-vendor/claude-*``, ``your-gateway.example.com`` →
+  ``your-gateway.example.com``, ``acme-launch-2026`` →
+  ``acme-launch-2026``, Bilibili video IDs replaced with
+  ``BVxxxxxxxxxx``, real captions replaced with ``ACME 家电智能工厂`` etc.
+  Applies to ``src/``, ``tests/``, ``docs/plans/``, ``prompts/``,
+  ``AGENTS.md``, ``README.md``, ``CHANGELOG.md``.
+
+- ``docs/plans/`` preserved with placeholders — no confidential data
+  removed from the design record.
+
+### Deliberately NOT changed
+
+- ``is_live`` field on ``SelectedFrame`` remains. It's still useful
+  metadata for the report's quality banner and for future analytics.
+  It simply no longer gates abort decisions.
+
+- F2 (config.yaml override for extract thresholds) deferred to v0.3.7.
+  The fixed constant in ``methodology.py`` is sufficient; config
+  override is nice-to-have for power users.
+
+- ``SELECTEDFRAME.is_live`` field untouched — still populated by
+  Vision LLM, still available in state.json for debug tools.
+
 ## [0.3.5] — Agent-friendly preflight phrasing (2026-05-26)
 
 ### Fixed
@@ -85,7 +162,7 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 - **P1: ``_fuzzy_section_match`` adds 3-gram trigram fallback for Chinese
   compound tokens**. Stage 3 vision LLM emits ``recommended_section``
   *before* stage 5 generates the real outline, so its phrasing rarely
-  matches outline chapter titles word-for-word. Pre-v0.3.4, "武汉智能工厂"
+  matches outline chapter titles word-for-word. Pre-v0.3.4, "智能工厂"
   vs "八、ACME智能工厂" failed token / substring match → frame went into
   the unassigned bucket → draft LLM placed it wherever it wanted (one
   of the root causes of "wrong-section" complaints). v0.3.4 adds a
@@ -100,7 +177,7 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 - **P3: ``check_image_section_fit`` (5.5.4) now judges Chinese-dense
   captions instead of silently passing them**. Pre-v0.3.4 gate required
   ``len(cap_tokens) >= 4`` where tokens come from whitespace/punctuation
-  splitting. Real Chinese caption "ACME家电智能工厂介绍武汉装配线片段"
+  splitting. Real Chinese caption "ACME家电智能工厂介绍装配线片段"
   splits to **1** token → never reached the mismatch decision → fit
   always passed regardless of content. Now the gate also accepts
   ``len(cap_trigrams) >= 8`` (≈ 10 Chinese chars), and trigram
@@ -250,7 +327,7 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   abort**. v0.2.4 made unverified models a blocker to prevent silent
   garbage from text-only models on vision stages. The implementation
   side-effect: gateway-prefixed model IDs like
-  ``your-company-llm-anthropic/your-vendor/claude-opus-4-7`` were routinely
+  ``your-gateway-anthropic/your-vendor/claude-opus-4-7`` were routinely
   hitting ``UNKNOWN`` and aborting the run, even though the substring
   matcher in ``preflight.py`` already classifies them correctly as
   VERIFIED. v0.3.2 splits the two cases: ``KNOWN_TEXT_ONLY`` stays a
@@ -339,15 +416,15 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   skipping verify, pipeline abort) now leaves the field False and
   ``render._compute_banner`` synthesizes a red banner with "Quality
   gate did not run" — silent unsigned reports are blocked. Real bug
-  from your-company 2026-05-20: state had 5 gates fail but quality_passed=True
+  from acme-launch-2026 baseline: state had 5 gates fail but quality_passed=True
   because the True default leaked when final assessment never executed.
 
 - **5.5.4 image-section fit considers ### subsections** (B3). The
   static keyword-overlap heuristic now tracks the most-recent ###
   subsection title within each chapter and includes its tokens (plus
   3-char sliding-window n-grams of compound tokens) in the hit pool.
-  Real bug: factory frames inside ``### 8.3 制造底气—武汉智能工厂``
-  were falsely flagged because the parent ``## 八、ACME空调`` chapter
+  Real bug: factory frames inside ``### 8.3 制造底气—智能工厂`` were
+  falsely flagged because the parent ``## 八、ACME 空调`` chapter
   title doesn't contain 工厂.
 
 - **Extract methodology constants centralized** (E1/E2/E3). New
@@ -361,7 +438,7 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 ### Fixed
 
 - v0.3.0 retry orchestration silently published a 22-image / 5-failed-
-  gate / quality_passed=True report from the your-company 2026-05-20 run.
+  gate / quality_passed=True report from the acme-launch-2026 baseline run.
   Combined effect of the changes above closes 19 audit findings
   documented in ``docs/plans/2026-05-26-v031-image-quality-hard-gates.md``.
 
@@ -728,7 +805,7 @@ content-sha256: <sha256 of body bytes after frontmatter>
 source-url: https://...
 stages-completed: [2, 3, 5, 5.5]
 stages-skipped: [1, 4]
-model-extract: your-company/mimo-v2.5
+model-extract: your-vendor/text-only-v1
 model-extract-tier: known_text_only
 ---
 ```

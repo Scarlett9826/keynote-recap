@@ -19,7 +19,7 @@ report that mimicked the project's expected output. Verification:
 - No `<meta name="content-sha256">`
 - No `.recap-stamp` floating element
 - No standard `report.md` produced
-- File path arbitrary (`~/Desktop/ACME全生态发布会2026_深度回顾.html`)
+- File path arbitrary (`~/Desktop/ACME 全生态发布会2026_深度回顾.html`)
 - Heading format violates project methodology (`## 1、` instead of `## 一、`)
 - Used 📌 emoji (project rule: only 📎/✅ allowed)
 

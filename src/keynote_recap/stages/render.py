@@ -650,7 +650,7 @@ def _build_responsibility_section(state: State) -> str:
 <ul>
   <li>方法论：整体概要 callout / 时间-数据三段对比 / 「一点观察」+「未查到」</li>
   <li>章节结构：L1-L3 层级、bullet 缩进、图顶格</li>
-  <li>图片筛选：信息量 / 相关性 / 去重三原则、live ratio 硬门、桶约束配位</li>
+  <li>图片筛选：信息量 / 相关性 / 去重三原则、useful ratio 硬门（v0.3.6）、桶约束配位</li>
   <li>禁词与文风：emoji / 渲染感 / 转录腔等 5.5.3 lint</li>
   <li>事实校验：5.5.2 真看图核对 caption、引用源 allowlist</li>
 </ul>

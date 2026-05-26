@@ -384,7 +384,7 @@ def _build_integrity_callout(state, cfg) -> str:
         > ⚠️ 本次 keynote-recap 部分运行
         > - 跳过：stage 1（字幕，原因：...），stage 4（事实查证）
         > - 完整：stage 2, 3, 5, 5.5
-        > - 模型：your-company/mimo-v2.5（不在 verified 列表）
+        > - 模型：your-vendor/text-only-v1（不在 verified 列表）
         > - 本报告无法验证以下方法论项：...
 
     Agent compressing the report MUST confront this — keep it (exposes
@@ -565,7 +565,7 @@ def _fuzzy_section_match(rec: str, chapter: str) -> bool:
     Strips Chinese numerals/punctuation and compares 2+ char tokens.
 
     v0.3.4 P1: also tries 3-gram sliding-window overlap so Chinese compound
-    tokens like "武汉智能工厂" / "智能工厂介绍" share trigrams (智能工, 能工厂)
+    tokens like "智能工厂" / "智能工厂介绍" share trigrams (智能工, 能工厂)
     even when neither is a substring of the other. Vision LLM (stage 3) emits
     ``recommended_section`` *before* stage 5 generates the real outline, so
     its phrasing won't match outline chapter titles word-for-word — this 3-gram
@@ -579,7 +579,7 @@ def _fuzzy_section_match(rec: str, chapter: str) -> bool:
         return {t.strip() for t in clean.split() if len(t.strip()) >= 2}
 
     def _trigrams(s: str) -> set[str]:
-        # Strip punctuation/numerals first so "武汉、智能工厂" → "武汉智能工厂".
+        # Strip punctuation/numerals first so "、智能工厂" → "智能工厂".
         clean = re.sub(r"[一二三四五六七八九十、：（）()\s—\-:,，。.]+", "", s)
         if len(clean) < 3:
             return set()

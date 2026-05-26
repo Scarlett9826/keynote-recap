@@ -132,7 +132,7 @@ def check_per_section_floor(
         report_md: Full report.md text.
         per_section_min: Floor for non-mainline sections.
         mainline_titles: Set of titles considered "mainline". Match is exact
-            against the ## title line (e.g. "一、ACME YU7 GT：纽北最速 SUV").
+            against the ## title line (e.g. "一、ACME GT：纽北最速 SUV").
             Pass empty set to skip mainline check entirely.
         per_mainline_min: Floor for mainline sections.
 
@@ -465,7 +465,7 @@ def check_image_section_fit(report_md: str) -> dict:
         # 中文数字/punctuation) + content words from non-image body lines.
         # v0.3.1 (B3): also include nearest-preceding ### subsection title
         # (within the same chapter) when scoring each image. Real-world case:
-        # ## 八、ACME空调 / ### 8.3 制造底气 — 武汉智能工厂 / image about 工厂
+        # ## 八、ACME 空调 / ### 8.3 制造底气 — 智能工厂 / image about 工厂
         # — chapter title doesn't contain 工厂, but the subsection does.
         title_clean = re.sub(r"[一二三四五六七八九十、：（）()\s]+", " ", title).strip()
         title_keywords = {w.strip("：—、，。 ") for w in title_clean.split() if len(w) >= 2}
@@ -481,7 +481,7 @@ def check_image_section_fit(report_md: str) -> dict:
             if sub_match:
                 sub_title = sub_match.group(1).strip()
                 # subsection keywords: split aggressively on Chinese punctuation
-                # AND ASCII separators, so 武汉家电智能工厂 / 磁悬浮装配线 become
+                # AND ASCII separators, so ACME家电智能工厂 / 磁悬浮装配线 become
                 # separate tokens (so substring overlap with caption tokens works).
                 current_subsection_keywords = {
                     w.strip("：—、，。 ")
@@ -508,7 +508,7 @@ def check_image_section_fit(report_md: str) -> dict:
                     cap_trigrams = {cap_clean[i : i + 3] for i in range(len(cap_clean) - 2)}
                 # Combine ## chapter keywords + ### subsection keywords for hit scoring.
                 # v0.3.1 (B3): expand pool with 3-char sliding-window substrings of each
-                # section/subsection keyword so long compound tokens like 武汉家电智能工厂
+                # section/subsection keyword so long compound tokens like ACME家电智能工厂
                 # match caption tokens like ACME家电智能工厂介绍片段 via shared 3-grams
                 # (家电智, 电智能, 智能工, 能工厂, …).
                 section_keywords = title_keywords | current_subsection_keywords
@@ -686,41 +686,45 @@ def check_structure(report_md: str) -> dict:
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# 5.5.6 image source mix (M6 — addresses "图全是官方营销图，不是发布会现场" feedback)
+# 5.5.6 image source mix — v0.3.6 F5: now uses info_density (useful ratio)
+#   not live/render binary. Legitimate keynotes have 60%+ official renders;
+#   the live-ratio gate was too aggressive. "Useful" = info_density >= 0.70.
 # ──────────────────────────────────────────────────────────────────────────────
-def check_image_source_mix(state: State, total_min: int = 25, live_ratio_min: float = 0.70) -> dict:
+def check_image_source_mix(state: State, total_min: int = 25, useful_ratio_min: float = 0.70) -> dict:
     """Inspect state.selected_frames and ensure:
 
       1. Total selected frames >= total_min (default 25 per strict tier)
-      2. Ratio of is_live=True frames >= live_ratio_min (default 0.70)
+      2. Ratio of useful frames (info_density >= 0.70) >= useful_ratio_min
+         (default 0.70). Replaced v0.3.1 live_ratio check (v0.3.6 F5).
 
     Both gates are HARD: failure triggers a stage 3 retry. Stage 5 retry
     can't fix this — only re-running vision selection can.
     """
     frames = state.selected_frames
     n_total = len(frames)
-    n_live = sum(1 for f in frames if f.is_live)
-    n_non_live = n_total - n_live
-    live_ratio = (n_live / n_total) if n_total else 0.0
+    n_useful = sum(1 for f in frames if f.info_density >= M.EXTRACT_INFO_DENSITY_MIN)
+    n_not_useful = n_total - n_useful
+    useful_ratio = (n_useful / n_total) if n_total else 0.0
 
     issues: list[str] = []
     if n_total < total_min:
         issues.append(
             f"frame count {n_total} < {total_min} required (strict tier)"
         )
-    if n_total > 0 and live_ratio < live_ratio_min:
+    if n_total > 0 and useful_ratio < useful_ratio_min:
         issues.append(
-            f"live ratio {live_ratio:.0%} < {live_ratio_min:.0%} required "
-            f"({n_live} live / {n_non_live} non-live)"
+            f"useful ratio {useful_ratio:.0%} < {useful_ratio_min:.0%} required "
+            f"({n_useful} useful / {n_not_useful} low-info frames; "
+            f"useful = info_density >= {M.EXTRACT_INFO_DENSITY_MIN:.0%})"
         )
 
     return {
         "total": n_total,
-        "live": n_live,
-        "non_live": n_non_live,
-        "live_ratio": live_ratio,
+        "useful": n_useful,
+        "not_useful": n_not_useful,
+        "useful_ratio": useful_ratio,
         "total_min": total_min,
-        "live_ratio_min": live_ratio_min,
+        "useful_ratio_min": useful_ratio_min,
         "issues": issues,
         "all_pass": not issues,
     }
@@ -950,19 +954,20 @@ def run(state: State, cfg: Config) -> State:
             )
 
     # 5.5.6 — image source mix + total floor (HARD GATE → stage 3 retry)
+    # v0.3.6 F5: metric is now useful_ratio (info_density >= 0.70), not live_ratio.
     src_mix = check_image_source_mix(state)
     state.image_mix_passed = src_mix["all_pass"]
     if src_mix["all_pass"]:
         console.print(
             f"  [5.5.6] image source mix: ✓ "
-            f"total={src_mix['total']} live={src_mix['live']} "
-            f"({src_mix['live_ratio']:.0%} ≥ {src_mix['live_ratio_min']:.0%})"
+            f"total={src_mix['total']} useful={src_mix['useful']} "
+            f"({src_mix['useful_ratio']:.0%} ≥ {src_mix['useful_ratio_min']:.0%})"
         )
     else:
         console.print(
             f"  [5.5.6] image source mix: [red]✗ "
-            f"total={src_mix['total']} live={src_mix['live']}/{src_mix['total']} "
-            f"({src_mix['live_ratio']:.0%})[/]"
+            f"total={src_mix['total']} useful={src_mix['useful']}/{src_mix['total']} "
+            f"({src_mix['useful_ratio']:.0%})[/]"
         )
         for issue in src_mix["issues"]:
             console.print(f"          - {issue}")

@@ -180,6 +180,33 @@ def check_disk_space(output_dir: Path, required_gb: float = 5.0) -> EnvCheck:
     return EnvCheck(ok=True, what="disk", detail=f"{free_gb:.1f} GB free at {target}")
 
 
+def check_anthropic_base_url(base_url: str) -> EnvCheck:
+    """v0.3.6: detect ``base_url`` ending with ``/v1`` when using
+    ``anthropic-native`` provider. The Anthropic SDK automatically
+    appends ``/v1/messages``; setting ``base_url`` to
+    ``https://gateway/anthropic/v1`` produces a
+    ``/v1/v1/messages`` path → 404. The fix is to drop the trailing
+    ``/v1`` so the SDK's own suffix works correctly.
+
+    This is a warning (not blocker) because the operator might be
+    using the openai-compatible provider where base_url + /v1 is valid.
+    """
+    if base_url and base_url.rstrip("/").endswith("/v1"):
+        return EnvCheck(
+            ok=False,
+            what="base_url",
+            detail=f"'{base_url}' ends with '/v1'. Anthropic-native SDK "
+                   "automatically appends '/v1/messages'; the effective path "
+                   "becomes '.../v1/v1/messages' which returns 404. Remove "
+                   "the trailing '/v1' from base_url.",
+            fix="Edit ~/.config/keynote-recap/config.yaml: "
+                "remove trailing '/v1' from llm.base_url. "
+                "The SDK will add it automatically.",
+            severity="warning",
+        )
+    return EnvCheck(ok=True, what="base_url", detail="no trailing /v1 (OK)")
+
+
 def check_api_key(env_var_name: str) -> EnvCheck:
     """Verify the configured LLM API key env var is set (NOT that it's valid).
 
@@ -234,7 +261,7 @@ def check_api_key(env_var_name: str) -> EnvCheck:
 # ──────────────────────────────────────────────────────────────────────────────
 # Aggregate
 # ──────────────────────────────────────────────────────────────────────────────
-def run_all_checks(output_dir: Path, api_key_env: str) -> list[EnvCheck]:
+def run_all_checks(output_dir: Path, api_key_env: str, base_url: str = "") -> list[EnvCheck]:
     """Run every preflight env check; caller decides what to do with results."""
     return [
         check_python_version(),
@@ -243,6 +270,7 @@ def run_all_checks(output_dir: Path, api_key_env: str) -> list[EnvCheck]:
         check_yt_dlp(),
         check_disk_space(output_dir),
         check_api_key(api_key_env),
+        check_anthropic_base_url(base_url),
     ]
 
 

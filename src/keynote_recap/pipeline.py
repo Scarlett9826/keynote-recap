@@ -50,7 +50,7 @@ _STAGE_INFO: dict[str, dict[str, str]] = {
     "extract": {
         "model_attr": "extract",
         "task": "vision LLM 3-principle filter (info / relevance / dedup)",
-        "guards": "5.5.6 live ratio >= 70%, 5.5.7 topic coverage",
+        "guards": "5.5.6 useful ratio >= 70%, 5.5.7 topic coverage (v0.3.6 F5)",
     },
     "research": {
         "model_attr": "research",
@@ -212,8 +212,8 @@ def _collect_extract_failures(state: State) -> list[str]:
     issues: list[str] = []
     if not state.image_mix_passed:
         issues.append(
-            "5.5.6 image mix: total frames < 35 or live ratio < 50% "
-            "(too many marketing renders / inserts vs. live keynote frames)"
+            "5.5.6 image mix: total frames < 35 or useful ratio < 50% "
+            "(too many low-info frames: empty screens / transitions / noise)"
         )
     if not state.topic_coverage_passed:
         issues.append(

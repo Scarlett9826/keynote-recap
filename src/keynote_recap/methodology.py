@@ -75,13 +75,20 @@ EXTRACT_FINAL_COUNT_MAX: int = 65
 EXTRACT_INFO_DENSITY_MIN: float = 0.70
 EXTRACT_RELEVANCE_MIN: float = 0.70
 
-# v0.3.1 — live-ratio abort floor. Two-tier with prompt:
-#   - prompt 03 still asks for 0.70 (soft target; vision LLM aims for it)
-#   - this 0.50 is the abort floor (raise ExtractFloorError below it)
-# Why not also 0.70 as abort: retry rarely flips a 35%→70% live ratio in
-# one pass; 0.50 says "现场图至少占多数" — a clear-signal floor that
-# distinguishes a real keynote recap from a marketing-render slideshow.
-EXTRACT_LIVE_RATIO_MIN: float = 0.50
+# v0.3.6 — useful-ratio abort floor. Replaces v0.3.1 live-ratio.
+# ``live_ratio`` was fundamentally wrong: legitimate keynote videos
+# (product launches, developer conferences) routinely contain 60%+
+# official marketing renders / CGI inserts interspersed with live
+# footage. Demanding >= 50% "live camera" frames meant false-aborting
+# on valid sources. The correct metric is *useful* ratio: frames whose
+# ``info_density >= EXTRACT_INFO_DENSITY_MIN (0.70)`` are considered
+# "useful" regardless of whether the camera was on stage or playing a
+# pre-recorded render. This matches the user's real expectation: "I
+# want information-dense frames, not empty screens." The 0.50 floor
+# says at least half of selected frames must carry non-trivial info.
+# v0.3.1 two-tier design (prompt 0.70 soft, code 0.50 hard floor) is
+# preserved; only the metric changed.
+EXTRACT_USEFUL_RATIO_MIN: float = 0.50
 
 # v0.3.1 — A8 硬约束代码兑现：每板块至少 1 张图。
 # methodology/filter-three-principles.md 写过"绝不接受这个章节没合适的图"，

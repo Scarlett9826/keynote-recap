@@ -1104,8 +1104,8 @@ def test_v032_preflight_recognises_gateway_prefixed_models():
     from keynote_recap.preflight import ModelTier, check_model_capability
 
     cases = [
-        "your-company-llm-anthropic/your-vendor/claude-opus-4-7",
-        "your-company-llm-anthropic/your-vendor/claude-sonnet-4-6",
+        "your-gateway-anthropic/your-vendor/claude-opus-4-7",
+        "your-gateway-anthropic/your-vendor/claude-sonnet-4-6",
         "openrouter/anthropic/claude-opus-4",
         "gateway/openai/gpt-4o",
         "your-gateway/gemini-2.5-pro",
@@ -1332,20 +1332,32 @@ def _make_frame(name: str, is_live: bool = True):
     )
 
 
+def _make_frame_by_info(name: str, useful: bool = True):
+    """Like _make_frame but controls info_density to test useful_ratio gate.
+    v0.3.6 F5 replacement info-dense for live/render."""
+    from keynote_recap.state import SelectedFrame
+    return SelectedFrame(
+        filename=name, timestamp_s=1.0, category="demo",
+        caption="c", recommended_section="x",
+        info_density=0.8 if useful else 0.1,
+        relevance=0.8, is_live=useful,
+    )
+
+
 def test_d2_image_source_mix_passes_when_above_thresholds():
-    """≥25 frames + ≥70% live → all_pass=True."""
+    """v0.3.6 F5: ≥25 frames + ≥70% useful (info_density >= 0.70) → all_pass=True."""
     from keynote_recap.stages.verify import check_image_source_mix
     from keynote_recap.state import State, VideoMeta
 
     s = State.new(url="x", output_dir="/tmp/x")
     s.video = VideoMeta(url="x")
-    s.selected_frames = [_make_frame(f"l{i}.jpg", True) for i in range(20)] + \
-                        [_make_frame(f"n{i}.jpg", False) for i in range(5)]
+    s.selected_frames = [_make_frame_by_info(f"u{i}.jpg", True) for i in range(20)] + \
+                        [_make_frame_by_info(f"n{i}.jpg", False) for i in range(5)]
     r = check_image_source_mix(s)
     assert r["all_pass"] is True
     assert r["total"] == 25
-    assert r["live"] == 20
-    assert r["live_ratio"] == 0.8
+    assert r["useful"] == 20
+    assert r["useful_ratio"] == 0.8
 
 
 def test_d2_image_source_mix_fails_when_total_too_low():
@@ -1355,25 +1367,25 @@ def test_d2_image_source_mix_fails_when_total_too_low():
 
     s = State.new(url="x", output_dir="/tmp/x")
     s.video = VideoMeta(url="x")
-    s.selected_frames = [_make_frame(f"l{i}.jpg", True) for i in range(8)]
+    s.selected_frames = [_make_frame_by_info(f"u{i}.jpg", True) for i in range(8)]
     r = check_image_source_mix(s)
     assert r["all_pass"] is False
     assert any("frame count" in i for i in r["issues"])
 
 
-def test_d2_image_source_mix_fails_when_live_ratio_too_low():
-    """≥25 frames but live <70% → all_pass=False."""
+def test_d2_image_source_mix_fails_when_useful_ratio_too_low():
+    """≥25 frames but useful <70% → all_pass=False."""
     from keynote_recap.stages.verify import check_image_source_mix
     from keynote_recap.state import State, VideoMeta
 
     s = State.new(url="x", output_dir="/tmp/x")
     s.video = VideoMeta(url="x")
-    # 0525 PDF case: 8/30 live = 26%
-    s.selected_frames = [_make_frame(f"l{i}.jpg", True) for i in range(8)] + \
-                        [_make_frame(f"n{i}.jpg", False) for i in range(22)]
+    # 0525 PDF case: 8/30 useful = 26%
+    s.selected_frames = [_make_frame_by_info(f"u{i}.jpg", True) for i in range(8)] + \
+                        [_make_frame_by_info(f"n{i}.jpg", False) for i in range(22)]
     r = check_image_source_mix(s)
     assert r["all_pass"] is False
-    assert r["live_ratio"] < 0.70
+    assert r["useful_ratio"] < 0.70
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -1592,7 +1604,7 @@ def test_e2e_0525pdf_scenario_would_have_been_caught_by_gates():
     # Both gates must reject this report
     assert mix["all_pass"] is False, "5.5.6 gate must catch 8-frame all-render scenario"
     assert mix["total"] == 8, "should report low total frame count"
-    assert mix["live_ratio"] == 0.0, "all 8 are non-live → 0% live ratio"
+    assert mix["useful_ratio"] == 0.0, "all 8 have low info_density → 0% useful ratio"
 
     # Topic coverage may pass or fail depending on whether YU7/SU7 are in
     # _PRODUCT_PATTERNS. The important property is at least one of {mix, cov}
@@ -1921,7 +1933,7 @@ def test_v024_integrity_callout_half_run_template():
         "1": "bilibili 412",
         "4": "depends on stage 1",
     }
-    s.models_used = {"extract": "your-company/mimo-v2.5"}
+    s.models_used = {"extract": "your-vendor/text-only-v1"}
     s.model_tiers = {"extract": "known_text_only"}
 
     callout = _build_integrity_callout(s, None)
@@ -2643,7 +2655,7 @@ def test_v031_methodology_constants():
     """v0.3.1: image quality hard floor constants exist with correct values."""
     from keynote_recap import methodology as M
     assert M.EXTRACT_FINAL_COUNT_MIN == 35  # E1: was 30, now aligned with prompts/03
-    assert M.EXTRACT_LIVE_RATIO_MIN == 0.50  # E2: new, abort floor (prompt keeps 0.70 soft)
+    assert M.EXTRACT_USEFUL_RATIO_MIN == 0.50  # v0.3.6 F5: replaces live_ratio
     assert M.EXTRACT_PER_SECTION_MIN == 1  # E3: A8 硬约束
     assert M.EXTRACT_PER_MAINLINE_MIN == 4  # E3: 主线 4-6 张
     assert M.EXTRACT_CAPTION_VERIFY_WRONG_MAX == 1  # B2: tolerance for vision LLM hiccup
@@ -2696,41 +2708,51 @@ def test_v031_extract_aborts_below_count_floor():
     )
     too_few = [_make_selected_frame(f"f{i}.jpg") for i in range(20)]
     try:
-        _check_extract_floors(too_few, count_min=35, live_ratio_min=0.50)
+        _check_extract_floors(too_few, count_min=35, useful_ratio_min=0.50)
     except ExtractFloorError as e:
         assert "20" in str(e) and "35" in str(e)
     else:
         raise AssertionError("expected ExtractFloorError on count<min")
 
 
-def test_v031_extract_aborts_below_live_ratio():
-    """v0.3.1 A3: live ratio < 0.50 raises ExtractFloorError."""
+def test_v031_extract_aborts_below_useful_ratio():
+    """v0.3.6 F5: useful ratio (info_density >= 0.70) < 0.50 raises ExtractFloorError."""
     from keynote_recap.stages.extract import (
         ExtractFloorError,
         _check_extract_floors,
     )
-    # 35 张但只 10 张 live → 28.5% < 50%
+    # 35 张但只 10 张 info_density >= 0.70 → 28.5% < 50%
     frames = [
-        _make_selected_frame(f"f{i}.jpg", is_live=(i < 10))
+        _make_selected_frame(f"f{i}.jpg", info_density=(0.85 if i < 10 else 0.1))
         for i in range(35)
     ]
     try:
-        _check_extract_floors(frames, count_min=35, live_ratio_min=0.50)
+        _check_extract_floors(frames, count_min=35, useful_ratio_min=0.50)
     except ExtractFloorError as e:
-        assert "live" in str(e).lower()
+        assert "useful ratio" in str(e)
+        assert "28" in str(e) or "29" in str(e)  # 10/35=28.5%
     else:
-        raise AssertionError("expected ExtractFloorError on low live ratio")
+        raise AssertionError("expected ExtractFloorError on useful_ratio<min")
+
+
+def test_v031_extract_all_useful_passes():
+    """All frames with high info_density must pass useful_ratio floor."""
+    from keynote_recap.stages.extract import _check_extract_floors
+    frames = [_make_selected_frame(f"f{i}.jpg", info_density=0.85)
+              for i in range(35)]
+    # Should not raise — all useful
+    _check_extract_floors(frames, count_min=35, useful_ratio_min=0.50)
 
 
 def test_v031_extract_passes_when_floors_met():
-    """v0.3.1: 35 张 + 70% live + 全 density >= 0.70 → no exception."""
+    """v0.3.1: 35 张 + 全 density >= 0.70 → no exception."""
     from keynote_recap.stages.extract import _check_extract_floors
     frames = [
-        _make_selected_frame(f"f{i}.jpg", is_live=(i < 25))  # 25/35 = 71% live
+        _make_selected_frame(f"f{i}.jpg", info_density=0.85)
         for i in range(35)
     ]
     # 不抛异常 = 通过
-    _check_extract_floors(frames, count_min=35, live_ratio_min=0.50)
+    _check_extract_floors(frames, count_min=35, useful_ratio_min=0.50)
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -2873,23 +2895,23 @@ def test_v031_section_fit_subsection_grain_factory_in_ac_chapter():
     """v0.3.1 B3: image of 智能工厂 inside ### 8.3 子节 (under ## 八、空调
     chapter) should NOT be flagged as mismatch.
 
-    Real-world case from Xiaomi 2026-05-20 launch: §八 ACME空调 chapter has
-    a §8.3 制造底气 — 武汉智能工厂 subsection with factory frames; v0.3.0
+    Real-world case from acme-launch-2026 baseline: §八 ACME 空调 chapter has
+    a §8.3 制造底气 — 智能工厂 subsection with factory frames; v0.3.0
     5.5.4 falsely flagged because chapter-level keywords didn't include
     工厂. v0.3.1 must consider subsection title in the keyword pool.
     """
     from keynote_recap.stages.verify import check_image_section_fit
-    md = """## 八、ACME空调强劲风系列：风量对标柜机的挂机
+    md = """## 八、ACME 空调强劲风系列：风量对标柜机的挂机
 
 ### 8.1 1.5 匹挂机 — 风量 1000 m³/h
 
 ![空调实物对比表](frames/ac.jpg)
 
-### 8.3 制造底气 — 武汉家电智能工厂，磁悬浮装配线 + AI 100% 全检
+### 8.3 制造底气 — 家电智能工厂，磁悬浮装配线 + AI 100% 全检
 
-2024 年 10 月，ACME武汉家电智能工厂正式投产。
+2024 年 10 月，ACME 家电智能工厂正式投产。
 
-![（插播官方渲染）ACME家电智能工厂介绍片段：磁悬浮主板装配线，高精度主板定位](frames/factory.jpg)
+![（插播官方渲染）ACME 家电智能工厂介绍片段：磁悬浮主板装配线，高精度主板定位](frames/factory.jpg)
 """
     r = check_image_section_fit(md)
     factory_mm = [m for m in r.get("mismatches", []) if "factory" in m.get("filename", "")]
@@ -3047,13 +3069,13 @@ def test_v031_selected_frame_alt_short_round_trip():
         filename="x.jpg",
         timestamp_s=0.0,
         category="other",
-        caption="（插播官方渲染）武汉家电智能工厂磁悬浮装配线",
-        alt_short="武汉智能工厂装配线",
+        caption="（插播官方渲染）家电智能工厂磁悬浮装配线",
+        alt_short="家电智能工厂装配线",
         recommended_section="",
         info_density=0.7,
         relevance=0.7,
     )
-    assert f.alt_short == "武汉智能工厂装配线"
+    assert f.alt_short == "家电智能工厂装配线"
     assert len(f.alt_short) <= 25
 
 
@@ -3096,17 +3118,17 @@ def test_v031_draft_bucket_lists_alt_short():
         filename="frame_001.jpg",
         timestamp_s=10.0,
         category="data",
-        caption="（插播官方渲染）武汉家电智能工厂磁悬浮装配线",
-        alt_short="武汉智能工厂装配线",
-        recommended_section="八、ACME空调",
+        caption="（插播官方渲染）ACME 家电智能工厂磁悬浮装配线",
+        alt_short="ACME 智能工厂装配线",
+        recommended_section="八、ACME 空调",
         info_density=0.85,
         relevance=0.9,
     )
-    txt = _format_buckets_for_prompt([("八、ACME空调", [f])])
+    txt = _format_buckets_for_prompt([("八、ACME 空调", [f])])
     assert "alt_short" in txt
-    assert "武汉智能工厂装配线" in txt
+    assert "ACME 智能工厂装配线" in txt
     # rendered ![](frames/...) reference uses alt_short, not full caption
-    assert "![武汉智能工厂装配线](frames/frame_001.jpg)" in txt
+    assert "![ACME 智能工厂装配线](frames/frame_001.jpg)" in txt
 
 
 def test_v031_draft_bucket_falls_back_to_caption_when_no_alt_short():
@@ -3150,9 +3172,10 @@ def test_v031_audit_A2_prompt_and_code_count_consistent():
     assert M.EXTRACT_FINAL_COUNT_MIN == 35
 
 
-def test_v031_audit_A3_live_ratio_hard_floor_50pct():
+def test_v036_useful_ratio_hard_floor_50pct():
+    """v0.3.6 F5: useful ratio replaces live ratio."""
     from keynote_recap import methodology as M
-    assert M.EXTRACT_LIVE_RATIO_MIN == 0.50, "A3: live ratio hard floor 0.50"
+    assert M.EXTRACT_USEFUL_RATIO_MIN == 0.50, "F5: useful ratio hard floor 0.50"
 
 
 def test_v031_audit_A4_info_density_floor_enforced():
@@ -3276,9 +3299,10 @@ def test_v031_audit_E1_count_constant_consistent():
     assert M.EXTRACT_FINAL_COUNT_MIN == 35
 
 
-def test_v031_audit_E2_live_ratio_constant_centralized():
+def test_v036_useful_ratio_constant_centralized():
+    """v0.3.6 F5: useful ratio constant replaces live ratio in methodology."""
     from keynote_recap import methodology as M
-    assert hasattr(M, "EXTRACT_LIVE_RATIO_MIN")
+    assert hasattr(M, "EXTRACT_USEFUL_RATIO_MIN")
 
 
 def test_v031_audit_E3_per_section_constants_present():
@@ -3288,16 +3312,17 @@ def test_v031_audit_E3_per_section_constants_present():
 
 
 def test_v031_audit_full_19_findings_have_guards():
-    """Sentinel: count of v031_audit_* tests matches 19 findings + 1 total."""
+    """Sentinel: count of v031_audit_* tests (2 removed in v0.3.6 F5
+    because live_ratio replaced by useful_ratio = v036 tests)."""
     import sys
     mod = sys.modules[__name__]
     audit_tests = [
         n for n in dir(mod)
         if n.startswith("test_v031_audit_") and callable(getattr(mod, n))
     ]
-    # 19 individual finding tests + this sentinel = 20
-    assert len(audit_tests) >= 19, (
-        f"expected >= 19 audit tests, got {len(audit_tests)}: {audit_tests}"
+    # Originally 19 + 1 sentinel. v0.3.6 F5 retired A3+E2 → 17 + 1 = 18.
+    assert len(audit_tests) >= 17, (
+        f"expected >= 17 v031 audit tests, got {len(audit_tests)}: {audit_tests}"
     )
 
 
@@ -3635,12 +3660,12 @@ def test_v033_f6_extract_count_max_lifted_for_rescue_headroom():
 def test_v034_p1_fuzzy_match_bridges_cn_compound_tokens():
     """P1: stage 3 vision LLM emits ``recommended_section`` *before* stage 5
     generates the real outline; phrasing won't match exactly. 3-gram overlap
-    bridges 'compound noun' chinese tokens like 武汉智能工厂 ↔ ACME智能工厂."""
+    bridges 'compound noun' chinese tokens like 智能工厂 ↔ ACME 智能工厂."""
     from keynote_recap.stages.draft import _fuzzy_section_match
 
     # Cases that v0.3.3 fuzzy missed but should now match
-    assert _fuzzy_section_match("武汉智能工厂", "八、ACME智能工厂") is True
-    assert _fuzzy_section_match("智能工厂介绍", "武汉家电智能工厂") is True
+    assert _fuzzy_section_match("智能工厂", "八、ACME 智能工厂") is True
+    assert _fuzzy_section_match("智能工厂介绍", "家电智能工厂") is True
 
 
 def test_v034_p1_fuzzy_match_still_rejects_unrelated():
@@ -3649,7 +3674,7 @@ def test_v034_p1_fuzzy_match_still_rejects_unrelated():
     from keynote_recap.stages.draft import _fuzzy_section_match
 
     assert _fuzzy_section_match("Pixel Halo", "五、Search") is False
-    assert _fuzzy_section_match("your-company car", "pet show") is False
+    assert _fuzzy_section_match("acme car", "pet show") is False
     # cn-eng synonym is intentionally NOT bridged (would need semantic LLM)
     assert _fuzzy_section_match("搜索体验", "五、Search") is False
 
@@ -3661,7 +3686,7 @@ def test_v034_p1_fuzzy_match_preserves_v033_behaviour():
 
     assert _fuzzy_section_match("AI Agent", "二、AI Agent 演示") is True
     assert _fuzzy_section_match("Gemini 模型层", "模型层：Gemini 3.5 谱系") is True
-    assert _fuzzy_section_match("ACME空调", "八、ACME空调") is True
+    assert _fuzzy_section_match("ACME 空调", "八、ACME 空调") is True
     assert _fuzzy_section_match("搜索重塑", "五、搜索重塑") is True
 
 
@@ -3687,7 +3712,7 @@ def test_v034_p3_fit_judges_chinese_dense_captions():
     md = (
         "## 五、Search\n"
         "本章介绍搜索能力。\n\n"
-        "![ACME家电智能工厂介绍武汉装配线片段](frames/frame_42.jpg)\n\n"
+        "![ACME家电智能工厂介绍装配线片段](frames/frame_42.jpg)\n\n"
         "搜索新体验。\n"
     )
     result = check_image_section_fit(md)
@@ -3704,9 +3729,9 @@ def test_v034_p3_fit_pass_for_cn_caption_in_matching_section():
     from keynote_recap.stages.verify import check_image_section_fit
 
     md = (
-        "## 八、ACME智能工厂\n"
-        "工厂展示武汉装配线。\n\n"
-        "![ACME家电智能工厂介绍武汉装配线片段](frames/frame_99.jpg)\n\n"
+        "## 八、ACME 智能工厂\n"
+        "工厂展示装配线。\n\n"
+        "![ACME家电智能工厂介绍装配线片段](frames/frame_99.jpg)\n\n"
         "现场展示磁悬浮装配线。\n"
     )
     result = check_image_section_fit(md)
@@ -3738,7 +3763,7 @@ def test_v034_p3_mismatch_dict_carries_trigram_diagnostics():
     md = (
         "## 五、Search\n"
         "搜索能力介绍。\n\n"
-        "![ACME家电智能工厂介绍武汉装配线](frames/frame_x.jpg)\n"
+        "![ACME家电智能工厂介绍装配线](frames/frame_x.jpg)\n"
     )
     result = check_image_section_fit(md)
     assert result["mismatches"]

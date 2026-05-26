@@ -134,7 +134,7 @@ class State(BaseModel):
     placeholder_detected: bool = False    # 5.5.0: missing frame filenames in report.md
     lint_hard_failed: bool = False        # 5.5.3: any L1 forbidden phrase / emoji / transcription tell
     bucket_placement_passed: bool = True  # 5.5.4b (M6 D1): images in correct chapter bucket
-    image_mix_passed: bool = True         # 5.5.6 (M6 D2): live ratio + total floor
+    image_mix_passed: bool = True         # 5.5.6 (v0.3.6 F5): useful ratio + total floor
     topic_coverage_passed: bool = True    # 5.5.7 (M6 D4): high-freq topic coverage
     per_section_floor_passed: bool = True # v0.3.1 (A5/A6): per-section/per-mainline image floor
     caption_verify_wrong_count: int = 0   # v0.3.1 (B2): 5.5.2 sample-10 wrong caption count
@@ -153,7 +153,7 @@ class State(BaseModel):
     # v0.3.1 C2: defaults to False so any early-return path (retry exception,
     # --start-stage skipping verify, pipeline error) leaves this False and the
     # banner gets rendered. Only an explicit final-assessment pass sets True.
-    # Real bug from your-company 2026-05-20: 5 gates fail but quality_passed=True
+    # Real bug from acme-launch-2026 baseline: 5 gates fail but quality_passed=True
     # because final assessment never executed and the True default leaked.
     quality_passed: bool = False
 

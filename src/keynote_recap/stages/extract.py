@@ -305,14 +305,16 @@ def run(state: State, cfg: Config, retry_context: list[str] | None = None) -> St
 
     selected.sort(key=lambda f: f.timestamp_s)
 
-    # ─── v0.3.1 A1/A3: hard floor gate (count + live ratio) ───
+    # ─── v0.3.1 A1/A3: hard floor gate (count + useful ratio) ───
+    # v0.3.6 F5: replaced live_ratio with useful_ratio (info_density >= 0.70)
+    # because legitimate keynotes have 60%+ official renders / CGI inserts.
     # Raises ExtractFloorError → caught by pipeline retry orchestration
     # (which retries stage 3 with last-failures injected into the prompt).
     # Do NOT silently ship a sub-floor selection.
     _check_extract_floors(
         selected,
         count_min=M.EXTRACT_FINAL_COUNT_MIN,
-        live_ratio_min=M.EXTRACT_LIVE_RATIO_MIN,
+        useful_ratio_min=M.EXTRACT_USEFUL_RATIO_MIN,
     )
 
     # Move selected frames to frames/ for the final report
@@ -677,13 +679,18 @@ def _enforce_density_floor(
 def _check_extract_floors(
     selected: list[SelectedFrame],
     count_min: int = M.EXTRACT_FINAL_COUNT_MIN,
-    live_ratio_min: float = M.EXTRACT_LIVE_RATIO_MIN,
+    useful_ratio_min: float = M.EXTRACT_USEFUL_RATIO_MIN,
 ) -> None:
     """v0.3.1 A1/A3: raise ExtractFloorError if hard floors fail.
 
     Floors checked here (cheap / deterministic, run after dedupe + cap):
       - total count >= count_min (default 35; methodology.EXTRACT_FINAL_COUNT_MIN)
-      - live ratio >= live_ratio_min (default 0.50)
+      - useful ratio >= useful_ratio_min (default 0.50;
+        methodology.EXTRACT_USEFUL_RATIO_MIN). "Useful" = frames whose
+        info_density >= EXTRACT_INFO_DENSITY_MIN (0.70). This replaced
+        the v0.3.1 live_ratio gate (v0.3.6 F5): legitimate keynotes
+        routinely contain 60%+ official marketing renders / CGI inserts
+        that are information-dense but not "live camera" frames.
 
     Per-section / per-mainline checks live in verify (need report.md and
     section structure; see check_per_section_floor).
@@ -698,12 +705,12 @@ def _check_extract_floors(
             f"(EXTRACT_FINAL_COUNT_MIN). Vision LLM rejected too aggressively; "
             f"retry will inject 'select more frames' directive."
         )
-    n_live = sum(1 for f in selected if f.is_live)
-    ratio = n_live / n if n else 0.0
-    if ratio < live_ratio_min:
+    n_useful = sum(1 for f in selected if f.info_density >= M.EXTRACT_INFO_DENSITY_MIN)
+    ratio = n_useful / n if n else 0.0
+    if ratio < useful_ratio_min:
         raise ExtractFloorError(
-            f"live ratio {ratio:.0%} < {live_ratio_min:.0%} "
-            f"({n_live}/{n} live frames). Too many marketing renders / "
-            f"insert clips vs. live keynote frames; retry will boost live "
-            f"frame priority in prompt."
+            f"useful ratio {ratio:.0%} < {useful_ratio_min:.0%} "
+            f"({n_useful}/{n} frames with info_density >= {M.EXTRACT_INFO_DENSITY_MIN:.0%}). "
+            f"Too many low-info frames (empty screens / transitions / noise); "
+            f"retry will boost info-density priority in prompt."
         )

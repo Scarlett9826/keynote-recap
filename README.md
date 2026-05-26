@@ -235,7 +235,7 @@ stages:
 # ~/.config/keynote-recap/config.yaml
 llm:
   provider: anthropic-native         # v0.3.0 新增
-  base_url: https://your-gateway.example.com/anthropic/v1
+  base_url: https://your-gateway.example.com/anthropic    # ⚠ 不要带尾部 /v1
   api_key_env: OPENAI_API_KEY
   models:
     extract: your-vendor/claude-sonnet-4-6
@@ -245,7 +245,7 @@ llm:
     transcribe: your-vendor/claude-sonnet-4-6
 ```
 
-Anthropic SDK 自动追加 `/v1/messages` 到 base_url；代码会正确处理 `/v1` 后缀避免重复。请将 gateway 的完整路径（含 `/v1`）写在 `base_url` 中。
+**关于 `/v1` 后缀**（v0.3.6 修订）：Anthropic SDK 会自动在 `base_url` 后追加 `/v1/messages`。**`base_url` 不要带尾部 `/v1`**，否则 SDK 会拼出 `/v1/v1/messages` 而触发 404。`keynote-recap doctor` (v0.3.6+) 会主动检测这个错配并提示。模型 ID 的 `your-vendor/` 前缀替换为你 gateway 实际要求的路由前缀（不同 gateway 不同；询问你的 gateway 管理员）。
 
 ## 项目状态
 

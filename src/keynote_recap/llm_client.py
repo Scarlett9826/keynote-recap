@@ -461,9 +461,27 @@ class LLMClient:
             json_mode=json_mode,
         )
 
+    # v0.3.3 F1 — module-level counter so callers (and tests) can observe how
+    # often vision-LLM outputs needed json_repair fallback. A high count signals
+    # the model is producing malformed JSON systematically (raise temperature?
+    # tighten prompt?). Reset is the caller's responsibility (tests do).
+    _json_repair_invocations: int = 0
+
     @staticmethod
     def parse_json(text: str) -> Any:
-        """Robust JSON parsing — strips markdown fences if present."""
+        """Robust JSON parsing — strips markdown fences, then ``json.loads``.
+
+        v0.3.3 F1: on ``JSONDecodeError`` falls back to ``json_repair`` which
+        recovers from truncated output, trailing commas, unquoted keys, mixed
+        quotes, and stray prefix/suffix text. This prevents single-batch JSON
+        corruption from killing a whole stage 3 batch (≈ 8 frames lost per
+        incident, observed roughly 1 in 10 runs pre-fallback).
+
+        json_repair is best-effort: it returns *something* for nearly any
+        input, even garbage. Callers are still expected to validate the
+        returned shape (e.g. via the v0.3.3 F2 pydantic schema in
+        stages/extract.py).
+        """
         t = text.strip()
         if t.startswith("```"):
             lines = t.split("\n")
@@ -472,7 +490,13 @@ class LLMClient:
             if lines and lines[-1].startswith("```"):
                 lines = lines[:-1]
             t = "\n".join(lines)
-        return json.loads(t)
+        try:
+            return json.loads(t)
+        except json.JSONDecodeError:
+            from json_repair import repair_json
+
+            LLMClient._json_repair_invocations += 1
+            return repair_json(t, return_objects=True)
 
 
 # ──────────────────────────────────────────────────────────────────────────────

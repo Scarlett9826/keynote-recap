@@ -11,6 +11,7 @@ Strategy:
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 from rich.console import Console
 from rich.progress import Progress
@@ -179,6 +180,10 @@ def run(state: State, cfg: Config, retry_context: list[str] | None = None) -> St
         except Exception as e:
             return {"ok": False, "batch": batch, "error": str(e)}
 
+    # v0.3.3 F2: collect schema-coercion warnings across all batches; surfaced
+    # to state.runtime_warnings (and thus the report banner) at end of stage.
+    schema_warnings: list[str] = []
+
     with Progress(transient=True) as progress:
         task = progress.add_task("vision filter", total=len(candidates))
         results = run_parallel(batches, _run_batch, parallel=parallel)
@@ -211,8 +216,23 @@ def run(state: State, cfg: Config, retry_context: list[str] | None = None) -> St
                 continue
             track(state, stage="extract", model=cfg.llm.models.extract,
                   input_tokens=r["in_tokens"], output_tokens=r["out_tokens"])
-            _merge_batch_result(r["data"], batch, selected, rejected)
+            _merge_batch_result(r["data"], batch, selected, rejected,
+                                schema_warnings=schema_warnings)
             progress.advance(task, advance=len(batch))
+
+    # v0.3.3 F2: surface schema-coercion warnings to state. Cap to 5 to keep
+    # banner readable; full list also printed to console.
+    if schema_warnings:
+        console.print(
+            f"  [yellow]schema warnings: {len(schema_warnings)} fields coerced "
+            f"(LLM emitted unexpected types)[/]"
+        )
+        for w in schema_warnings[:5]:
+            console.print(f"    - {w}")
+        # Dedupe identical warnings before persisting (vision LLM tends to
+        # produce the same coercion class for an entire batch).
+        unique = list(dict.fromkeys(schema_warnings))[:10]
+        state.runtime_warnings.extend(unique)
 
     # ─── v0.3.1 A4: drop low-info-density frames before rescue/cap ───
     # Vision LLM sometimes self-assigns info_density < 0.70 but still puts
@@ -497,18 +517,77 @@ def _dedupe_by_phash(
     return kept
 
 
+def _coerce_float(raw: Any, default: float, *, field: str, fname: str,
+                  warnings: list[str]) -> float:
+    """v0.3.3 F2: coerce LLM-provided numeric to float with a default.
+
+    Vision LLMs occasionally emit strings like ``"high"`` / ``"0.7"`` /
+    ``null`` for what the prompt asks to be a 0-1 float. ``float("high")``
+    raises ValueError and used to crash the whole batch merge — losing 8
+    frames per incident. Now we coerce defensively and log to ``warnings``
+    so the issue surfaces in runtime_warnings without failing the run.
+    """
+    if isinstance(raw, (int, float)):
+        return float(raw)
+    if isinstance(raw, str):
+        try:
+            return float(raw.strip())
+        except ValueError:
+            warnings.append(
+                f"extract: {fname} {field}={raw!r} not numeric; using {default}"
+            )
+            return default
+    warnings.append(
+        f"extract: {fname} {field}={raw!r} unexpected type; using {default}"
+    )
+    return default
+
+
 def _merge_batch_result(
     data: dict,
     batch: list,
     selected_out: list[SelectedFrame],
     rejected_out: list[dict],
+    schema_warnings: list[str] | None = None,
 ) -> None:
-    """Merge LLM batch JSON into selected/rejected lists."""
+    """Merge LLM batch JSON into selected/rejected lists.
+
+    v0.3.3 F2: ``schema_warnings`` (optional) collects schema coercions
+    (non-numeric ``info_density``, etc.) so the caller can surface them
+    in ``state.runtime_warnings``. When ``None``, warnings are silently
+    swallowed (back-compat with tests / direct callers).
+    """
+    if schema_warnings is None:
+        schema_warnings = []
+
+    # v0.3.3 F2: data must be a dict; json_repair occasionally returns a
+    # list when the LLM emitted a bare array. Defensive coerce.
+    if not isinstance(data, dict):
+        schema_warnings.append(
+            f"extract: batch payload was {type(data).__name__}, expected dict; "
+            f"skipping {len(batch)} frames in this batch"
+        )
+        return
+
     name_to_candidate = {c.filename: c for c in batch}
 
-    for item in data.get("selected_frames", []):
+    raw_selected = data.get("selected_frames", []) or []
+    if not isinstance(raw_selected, list):
+        schema_warnings.append(
+            f"extract: selected_frames was {type(raw_selected).__name__}, "
+            f"expected list; skipping batch"
+        )
+        return
+
+    for item in raw_selected:
+        if not isinstance(item, dict):
+            schema_warnings.append(
+                f"extract: selected_frames entry was {type(item).__name__}, skipping"
+            )
+            continue
         fname = item.get("filename", "")
-        if fname not in name_to_candidate:
+        if not isinstance(fname, str) or fname not in name_to_candidate:
+            # Hallucinated filename or non-string — skip (counted in batch loss).
             continue
         c = name_to_candidate[fname]
         # M6: is_live defaults to True for backward compat — old prompts
@@ -518,28 +597,57 @@ def _merge_batch_result(
         # If LLM marked is_live=false but caption doesn't already start with
         # the disclaimer, prepend it so downstream readers see the warning.
         caption = item.get("caption", "")
+        if not isinstance(caption, str):
+            caption = str(caption)
         if not is_live and not caption.startswith("（插播官方渲染）"):
             caption = f"（插播官方渲染）{caption}"
         # v0.3.1 D2: alt_short — short alt text (<= 25 chars). Truncate if LLM
         # over-generates. Empty for legacy LLMs that ignore the new field;
         # render falls back to caption when alt_short is empty.
         alt_short_raw = item.get("alt_short", "") or ""
+        if not isinstance(alt_short_raw, str):
+            alt_short_raw = str(alt_short_raw)
         alt_short = alt_short_raw.strip()[:40]  # hard cap 40 chars defensive
+
+        category_raw = item.get("category", "other")
+        category = category_raw if isinstance(category_raw, str) else "other"
+
+        rec_section_raw = item.get("recommended_section", "")
+        rec_section = rec_section_raw if isinstance(rec_section_raw, str) else ""
+
+        what_read_raw = item.get("what_can_be_read", "")
+        what_read = what_read_raw if isinstance(what_read_raw, str) else ""
+
         selected_out.append(SelectedFrame(
             filename=fname,
             timestamp_s=c.timestamp_s,
-            category=item.get("category", "other"),
+            category=category,
             caption=caption,
             alt_short=alt_short,
-            recommended_section=item.get("recommended_section", ""),
-            info_density=float(item.get("info_density", 0.7)),
-            relevance=float(item.get("relevance_to_section", 0.7)),
+            recommended_section=rec_section,
+            info_density=_coerce_float(
+                item.get("info_density", 0.7), 0.7,
+                field="info_density", fname=fname, warnings=schema_warnings,
+            ),
+            relevance=_coerce_float(
+                item.get("relevance_to_section", 0.7), 0.7,
+                field="relevance_to_section", fname=fname, warnings=schema_warnings,
+            ),
             source="frame_extract",
             is_live=is_live,
-            what_can_be_read=item.get("what_can_be_read", ""),
+            what_can_be_read=what_read,
         ))
 
-    for item in data.get("rejected_frames", []):
+    raw_rejected = data.get("rejected_frames", []) or []
+    if not isinstance(raw_rejected, list):
+        schema_warnings.append(
+            f"extract: rejected_frames was {type(raw_rejected).__name__}, "
+            f"expected list; ignoring rejected list for this batch"
+        )
+        return
+    for item in raw_rejected:
+        if not isinstance(item, dict):
+            continue
         rejected_out.append({
             "filename": item.get("filename", ""),
             "rejection_reason": item.get("rejection_reason", ""),

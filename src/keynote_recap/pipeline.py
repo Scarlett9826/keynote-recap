@@ -189,6 +189,13 @@ def _collect_draft_failures(state: State) -> list[str]:
             "5.5.4b bucket placement: images placed cross-bucket "
             "(LLM ignored per-chapter frame buckets)"
         )
+    if not state.image_section_fit_passed:
+        issues.append(
+            f"5.5.4 image-section fit: {state.image_section_fit_mismatch_count} "
+            f"images likely placed in wrong section (heuristic: caption tokens "
+            f"don't appear in section title or body); LLM picked semantically "
+            f"unrelated chapter for these frames"
+        )
     if not state.structure_check_passed:
         issues.append(
             "5.5.5 structure: missing 核心判断/quotes/tables, or chapter heading malformed"

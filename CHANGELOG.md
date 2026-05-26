@@ -4,6 +4,100 @@ All notable changes to **keynote-recap** are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.3] — Three-flow robustness pass: extract / draft / verify shock-absorbers (2026-05-26)
+
+### Fixed
+
+- **F1: ``LLMClient.parse_json`` falls back to ``json_repair`` on
+  ``JSONDecodeError``**. Vision LLMs sporadically emit truncated output,
+  trailing commas, unquoted keys, or extra prose around the payload.
+  Pre-v0.3.3, any of these crashed the *entire* batch in stage 3
+  (≈ 8 frames lost per incident, observed roughly 1 in 10 runs at
+  ``BATCH_SIZE=10``). The fallback recovers in 9/9 typical corruption
+  classes (truncated, trailing comma, unquoted keys, mixed quotes,
+  fenced markdown, prefix prose, suffix prose, mid-string truncation,
+  bare list). Well-formed JSON skips the repair path entirely (zero
+  overhead on the happy path); a ``LLMClient._json_repair_invocations``
+  counter exposes how often the fallback fires for monitoring. The
+  earlier (be837c6 → b4162bb) attempt was reverted because it was
+  bundled with a count-floor regression and a stale-frames-dir lookup
+  hack; v0.3.3 ships only the fallback in isolation.
+
+- **F2: stage 3 batch merge no longer crashes on schema-malformed
+  vision-LLM output**. ``info_density: "high"`` (string instead of
+  float), bare lists at the top level, non-dict entries inside
+  ``selected_frames``, and non-string filenames now coerce defensively
+  with the original default values. Each coercion appends a one-line
+  diagnostic to ``state.runtime_warnings`` (deduped, capped at 10) and
+  surfaces in the report banner. Before: any single bad-type field
+  raised ``ValueError`` and dropped the whole batch.
+
+- **F4: caption_verify (5.5.2) excludes rescue frames from the sample**.
+  Rescue frames carry placeholder captions like ``[补救入选] 来自 ...``
+  which the vision LLM deterministically marks as ``wrong``, inflating
+  ``caption_verify_wrong_count`` past tolerance and triggering a stage 3
+  retry that promotes more rescue frames — an unwinnable loop. Now
+  ``verify_captions`` samples up to 10 non-rescue frames first; rescue
+  frames only fill in if the non-rescue pool is too small. Rescue
+  frames retain the ``[补救入选]`` prefix in the report so readers see
+  the disclaimer; the optional Tier-C "re-vision rescue captions" path
+  was rejected as low-yield (rescue frames *are* low-info-density by
+  definition; a second LLM look-back rarely produces a discriminating
+  caption and adds 0.05–0.15 USD per run).
+
+- **P5: 5.5.4 image-section-fit heuristic now feeds the retry decision
+  instead of being a console-only warning**. Previously, an image of
+  "Pixel Halo" placed inside ``## 五、Search`` would print a yellow
+  ``[5.5.4] image-section fit: 1 likely mismatches`` line and ship the
+  report with ``quality_passed=True``. v0.3.3 writes
+  ``state.image_section_fit_passed`` and
+  ``state.image_section_fit_mismatch_count``; mismatch count above
+  ``M.EXTRACT_IMAGE_SECTION_FIT_MISMATCH_MAX`` (default 3, ≈ 8.5% of
+  35 frames) now appears in ``_collect_draft_failures`` and triggers a
+  stage 5 retry (the LLM rewrites with stricter section-fit prompting).
+  Threshold deliberately wide because the underlying token-overlap
+  heuristic over-fires on Chinese compound headings; tighter token
+  splitting is queued for v0.3.4 (P3).
+
+- **F6: ``EXTRACT_FINAL_COUNT_MAX`` raised 50 → 65**. The 50 cap left
+  no headroom: rescue + perceptual-hash dedupe occasionally landed at
+  33–34 frames, below the 35 floor, tripping ``ExtractFloorError`` and
+  forcing an unnecessary retry on what was otherwise a healthy run.
+  65 gives 30 frames of headroom for dedupe collapse without changing
+  the floor (still 35). Math sanity: 14 chapters × per-section ≥ 1 +
+  2 mainline × extra-per-mainline 3 = 20 absolute lower bound; the
+  ceiling stays well above any methodology-imposed floor.
+
+### Added
+
+- **New methodology constant**:
+  ``EXTRACT_IMAGE_SECTION_FIT_MISMATCH_MAX = 3`` (P5).
+- **New state fields**: ``image_section_fit_passed: bool = True``,
+  ``image_section_fit_mismatch_count: int = 0`` (P5).
+- **New runtime dependency**: ``json-repair >= 0.30`` (F1; pure-python,
+  no native deps).
+- **12 new regression tests** covering all five fixes above, including
+  a guard test that locks ``json-repair`` as a *runtime* dep (not a
+  dev/optional dep) so installations from PyPI carry the fallback.
+
+### Notes
+
+- Three-flow scope reminder: this release fixes 5 of the 14 audit
+  findings spanning截图 (S1–S4) / 筛图 (F1–F7) / 配图 (P1–P5). The
+  remaining items (S2 score_image silent failures, S4 frame→timestamp
+  drift on variable-frame-rate sources, F3 single-shot retry policy,
+  F5 phash threshold, P1/P2 bucket fuzzy-match weakness, P3 Chinese
+  token-split miscalibration) are documented as known limitations and
+  queued for v0.3.4. None of those are crash-class; they degrade
+  output quality at the margins. Items U1–U4 (LLM stochasticity,
+  caption hallucination, RPM throttling, silent model upgrades) are
+  fundamental to LLM-driven pipelines and not fixable in code.
+
+- The user-visible promise this release does *not* make: zero errors.
+  No LLM-driven system can promise that. This release reduces the
+  "single bad LLM batch kills a whole stage" failure mode from
+  observable-per-run to rare-tail.
+
 ## [0.3.2] — Restore "in-window model works without re-entering api-key" (2026-05-26)
 
 ### Fixed

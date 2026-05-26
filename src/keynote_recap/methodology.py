@@ -62,7 +62,12 @@ SEGMENT_CHUNK_FLOOR: int = 3
 # with 0 images (verified Xiaomi 2026-05-20 launch produced only 27 frames
 # with 6 chapters uncovered → triggered v0.3.1 hard-gate work).
 EXTRACT_FINAL_COUNT_MIN: int = 35
-EXTRACT_FINAL_COUNT_MAX: int = 50
+# v0.3.3 F6: was 50; raised to 65 to give rescue + phash-dedupe headroom.
+# Math: 14 chapters × per_section_min(1) + 2 mainline × extra per_mainline(3)
+# = 20 absolute lower bound, but real keynote chapters often want 5-8 frames.
+# 50 cap was tight enough that rescue+dedupe occasionally landed at 33-34
+# (below the 35 floor) and tripped ExtractFloorError → unnecessary retry.
+EXTRACT_FINAL_COUNT_MAX: int = 65
 
 # Three-principle thresholds. info_density / relevance below 0.7 produces
 # pretty-but-empty frames or off-topic frames. v0.3.1 wires this into a
@@ -90,6 +95,16 @@ EXTRACT_PER_MAINLINE_MIN: int = 4
 # v0.3.1 — caption verify sample 10 张里 wrong 超过此数 → 触发 stage 3 retry。
 # 1 张容错（vision LLM 偶发幻觉），≥ 2 张说明系统性看错图，必须重跑。
 EXTRACT_CAPTION_VERIFY_WRONG_MAX: int = 1
+
+# v0.3.3 P5 — 5.5.4 image-section fit 启发式不匹配上限。
+# check_image_section_fit 此前只在控制台打印警告，不进入 retry 决策；
+# 已观察到的真 bug：image of "Pixel Halo" 落入 "## 五、Search" 章节，
+# 整个 run 走完仍 quality_passed=True。3 张容差对应 35 张里 ≈ 8.5%
+# 误差，覆盖中文章节标题分词的合理漏判；> 3 视为 LLM 系统性配错章节，
+# 走 stage 5 retry（draft 重写，不重跑 stage 3 — fit 是 draft 阶段决定的）。
+# 注意：此启发式对中文 token 切分本身有漏报倾向（cap_tokens 切中文偏粗），
+# 因此阈值偏宽容；P3 重新校准 token 切分留 v0.3.4。
+EXTRACT_IMAGE_SECTION_FIT_MISMATCH_MAX: int = 3
 
 
 # ──────────────────────────────────────────────────────────────────────────────

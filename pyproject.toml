@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "keynote-recap"
-version = "0.3.2"
+version = "0.3.3"
 description = "Turn 1.5h tech keynote videos into Feishu-friendly illustrated Chinese recap reports."
 readme = "README.md"
 license = { text = "MIT" }
@@ -63,6 +63,7 @@ dependencies = [
     "rich>=13.7",                   # CLI 进度条 + 美化输出
     "pydantic>=2.7",                # config / state 校验
     "tenacity>=8.2",                # 重试
+    "json-repair>=0.30",            # v0.3.3 F1 — vision LLM 输出截断/带尾逗号时的兜底解析
 ]
 
 [project.optional-dependencies]

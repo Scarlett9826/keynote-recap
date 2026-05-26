@@ -332,12 +332,26 @@ def verify_captions(state: State, cfg: Config, client: LLMClient) -> dict:
 
     Note: M1 implements basic check (random sample 10 frames to control cost).
     M2 will scale to all frames.
+
+    v0.3.3 F4: rescue frames (``source == "frame_extract_rescue"``) are
+    excluded from caption_verify sampling. Rescue frames carry placeholder
+    captions like ``"[补救入选] 来自 ..."`` that the vision LLM will
+    deterministically flag as ``wrong``, which used to inflate
+    ``caption_verify_wrong_count`` past tolerance and trigger an unwinnable
+    retry loop (the rescue path is what produced them in the first place).
+    Real-vision-judged frames are sampled first; if fewer than 10 exist we
+    fall back to including rescue frames to keep coverage.
     """
     if not state.selected_frames:
         return {"verifications": [], "summary": {"total": 0}}
 
-    # Sample first 10 to keep M1 fast
-    sample = state.selected_frames[:10]
+    # Sample first 10 non-rescue frames; only fall through to rescue if pool
+    # is too small (e.g. extreme retry where most frames are rescue-promoted).
+    non_rescue = [f for f in state.selected_frames if f.source != "frame_extract_rescue"]
+    rescue = [f for f in state.selected_frames if f.source == "frame_extract_rescue"]
+    sample = non_rescue[:10]
+    if len(sample) < 10:
+        sample = sample + rescue[: 10 - len(sample)]
     output_dir = Path(state.output_dir)
     frames_dir = output_dir / "frames"
 
@@ -836,14 +850,35 @@ def run(state: State, cfg: Config) -> State:
     if not lint["level1"] and not lint["level2"]:
         console.print("  [5.5.3] lint: ✓ no violations")
 
-    # 5.5.4 image-section fit (M4 heuristic — kept as soft warning)
+    # 5.5.4 image-section fit (M4 heuristic).
+    # v0.3.3 P5: was console-only warning; now writes state and feeds the
+    # draft-retry decision in pipeline._collect_draft_failures. Threshold is
+    # M.EXTRACT_IMAGE_SECTION_FIT_MISMATCH_MAX (default 3 / 35 frames ≈ 8.5%).
     fit = check_image_section_fit(report_md)
+    n_fit_mismatch = len(fit["mismatches"])
+    state.image_section_fit_mismatch_count = n_fit_mismatch
+    state.image_section_fit_passed = (
+        n_fit_mismatch <= M.EXTRACT_IMAGE_SECTION_FIT_MISMATCH_MAX
+    )
     if fit["all_pass"]:
         console.print("  [5.5.4] image-section fit: ✓ all images plausibly match section")
-    else:
-        n = len(fit["mismatches"])
-        console.print(f"  [5.5.4] image-section fit: [yellow]{n} likely mismatches[/]")
+    elif state.image_section_fit_passed:
+        console.print(
+            f"  [5.5.4] image-section fit: [yellow]{n_fit_mismatch} likely mismatches "
+            f"(within tolerance ≤ {M.EXTRACT_IMAGE_SECTION_FIT_MISMATCH_MAX})[/]"
+        )
         for m in fit["mismatches"][:3]:
+            console.print(
+                f"          - {m['filename']} in 「{m['section_title'][:40]}」 "
+                f"(caption: {m['caption_excerpt'][:40]}...)"
+            )
+    else:
+        console.print(
+            f"  [5.5.4] image-section fit: [red]✗ {n_fit_mismatch} mismatches "
+            f"(> tolerance {M.EXTRACT_IMAGE_SECTION_FIT_MISMATCH_MAX}); "
+            f"will trigger stage 5 retry[/]"
+        )
+        for m in fit["mismatches"][:5]:
             console.print(
                 f"          - {m['filename']} in 「{m['section_title'][:40]}」 "
                 f"(caption: {m['caption_excerpt'][:40]}...)"

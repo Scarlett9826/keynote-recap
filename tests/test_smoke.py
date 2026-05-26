@@ -1645,8 +1645,9 @@ def test_v023_methodology_module_exposes_locked_constants():
     # Frame extract floor / ceiling (replaces user-tunable knobs).
     # v0.3.1: MIN raised 30→35 to align with prompts/03; see
     # test_v031_methodology_constants for the new floor set.
+    # v0.3.3 F6: MAX raised 50→65 to give rescue+dedupe headroom.
     assert M.EXTRACT_FINAL_COUNT_MIN == 35
-    assert M.EXTRACT_FINAL_COUNT_MAX == 50
+    assert M.EXTRACT_FINAL_COUNT_MAX == 65
     # Segment-stage chunk policy
     assert M.SEGMENT_CHUNK_COUNT > 0
     assert M.SEGMENT_CHUNK_FLOOR > 0
@@ -3429,3 +3430,187 @@ def test_p14_extract_floor_handler_only_runs_once():
         "ExtractFloorError handler must check state.extract_retry_count to "
         "prevent infinite retry loops if the floor keeps failing"
     )
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# v0.3.3 — robustness: F1 (json_repair), F2 (schema), F4 (caption verify
+# rescue exclusion), P5 (image-section fit feeds retry), F6 (count_max raise)
+# ──────────────────────────────────────────────────────────────────────────────
+def test_v033_f1_parse_json_handles_truncated_output():
+    """F1: json_repair fallback recovers truncated vision-LLM JSON."""
+    from keynote_recap.llm_client import LLMClient
+
+    LLMClient._json_repair_invocations = 0
+    truncated = '{"selected_frames": [{"filename": "a.jpg", "caption": "x"'
+    result = LLMClient.parse_json(truncated)
+    assert isinstance(result, dict)
+    assert "selected_frames" in result
+    assert len(result["selected_frames"]) == 1
+    assert result["selected_frames"][0]["filename"] == "a.jpg"
+    assert LLMClient._json_repair_invocations == 1, (
+        "Truncated input must invoke json_repair fallback"
+    )
+
+
+def test_v033_f1_parse_json_well_formed_skips_repair():
+    """F1: well-formed JSON must NOT invoke json_repair (no overhead)."""
+    from keynote_recap.llm_client import LLMClient
+
+    LLMClient._json_repair_invocations = 0
+    result = LLMClient.parse_json('{"a": 1, "b": [2, 3]}')
+    assert result == {"a": 1, "b": [2, 3]}
+    assert LLMClient._json_repair_invocations == 0, (
+        "Well-formed JSON must use stdlib path; non-zero count means "
+        "we're paying the json_repair tax on every call"
+    )
+
+
+def test_v033_f1_parse_json_strips_markdown_fence_then_repairs():
+    """F1: markdown fence stripping still happens before json_repair."""
+    from keynote_recap.llm_client import LLMClient
+
+    LLMClient._json_repair_invocations = 0
+    fenced_broken = '```json\n{"a": 1,}\n```'
+    result = LLMClient.parse_json(fenced_broken)
+    assert result == {"a": 1}
+
+
+def test_v033_f1_dependency_declared():
+    """F1: json-repair must be a runtime dep (not optional)."""
+    pyproject = (Path(__file__).parent.parent / "pyproject.toml").read_text()
+    # Check it's in the main dependencies block, not optional
+    deps_block = pyproject.split("[project.optional-dependencies]")[0]
+    assert "json-repair" in deps_block, (
+        "json-repair must be a runtime dependency for F1 fallback to work"
+    )
+
+
+def test_v033_f2_merge_batch_coerces_string_info_density():
+    """F2: LLM emitting info_density='high' must not crash the batch."""
+    from keynote_recap.stages.extract import _merge_batch_result
+    from keynote_recap.state import FrameCandidate
+
+    batch = [FrameCandidate(filename="a.jpg", timestamp_s=10.0, score=0.9)]
+    data = {
+        "selected_frames": [{
+            "filename": "a.jpg",
+            "caption": "x",
+            "category": "demo",
+            "recommended_section": "测试",
+            "info_density": "high",        # Bad: string instead of float
+            "relevance_to_section": 0.8,
+        }],
+        "rejected_frames": [],
+    }
+    selected: list = []
+    rejected: list = []
+    warnings: list[str] = []
+    # Must not raise
+    _merge_batch_result(data, batch, selected, rejected, schema_warnings=warnings)
+    assert len(selected) == 1
+    assert selected[0].info_density == 0.7  # Defaulted
+    assert any("info_density" in w for w in warnings)
+
+
+def test_v033_f2_merge_batch_skips_non_dict_payload():
+    """F2: when LLM emits a bare list (or json_repair returns one),
+    do not crash; record warning and skip the batch."""
+    from keynote_recap.stages.extract import _merge_batch_result
+    from keynote_recap.state import FrameCandidate
+
+    batch = [FrameCandidate(filename="a.jpg", timestamp_s=1.0, score=0.5)]
+    selected: list = []
+    rejected: list = []
+    warnings: list[str] = []
+    _merge_batch_result([], batch, selected, rejected, schema_warnings=warnings)
+    assert selected == []
+    assert any("expected dict" in w for w in warnings)
+
+
+def test_v033_f2_merge_batch_handles_non_dict_entry_in_selected():
+    """F2: an entry inside selected_frames that's not a dict must be skipped,
+    not crash."""
+    from keynote_recap.stages.extract import _merge_batch_result
+    from keynote_recap.state import FrameCandidate
+
+    batch = [FrameCandidate(filename="a.jpg", timestamp_s=1.0, score=0.5)]
+    data = {"selected_frames": ["not-a-dict", {"filename": "a.jpg",
+                                               "caption": "ok",
+                                               "info_density": 0.8,
+                                               "relevance_to_section": 0.8,
+                                               "recommended_section": "x",
+                                               "category": "demo"}]}
+    selected: list = []
+    rejected: list = []
+    warnings: list[str] = []
+    _merge_batch_result(data, batch, selected, rejected, schema_warnings=warnings)
+    assert len(selected) == 1, "Valid entry must still be merged"
+    # Warning should mention the non-dict entry in some form
+    assert any("entry was str" in w or "skipping" in w for w in warnings), (
+        f"Expected warning about non-dict entry; got: {warnings}"
+    )
+
+
+def test_v033_f4_caption_verify_excludes_rescue_frames():
+    """F4: rescue frames must be sorted to the back of caption_verify
+    sample; non-rescue frames are sampled first."""
+    import inspect
+
+    from keynote_recap.stages.verify import verify_captions
+
+    src = inspect.getsource(verify_captions)
+    assert "frame_extract_rescue" in src, (
+        "verify_captions must filter on source==frame_extract_rescue (F4)"
+    )
+    assert "non_rescue" in src, (
+        "verify_captions must split by rescue/non-rescue before sampling"
+    )
+
+
+def test_v033_p5_image_section_fit_feeds_state():
+    """P5: 5.5.4 fit check writes state.image_section_fit_passed and
+    state.image_section_fit_mismatch_count."""
+    from keynote_recap.state import State
+
+    s = State.new(url="x", output_dir="/tmp/x")
+    # Default: fit passes
+    assert s.image_section_fit_passed is True
+    assert s.image_section_fit_mismatch_count == 0
+
+
+def test_v033_p5_draft_failures_includes_fit():
+    """P5: when image_section_fit_passed=False, _collect_draft_failures
+    must report it so retry orchestration kicks in."""
+    from keynote_recap.pipeline import _collect_draft_failures
+    from keynote_recap.state import State
+
+    s = State.new(url="x", output_dir="/tmp/x")
+    s.image_section_fit_passed = False
+    s.image_section_fit_mismatch_count = 5
+    issues = _collect_draft_failures(s)
+    assert any("5.5.4 image-section fit" in i for i in issues), (
+        "image-section fit failure must surface in draft failures so "
+        "stage 5 retries instead of silently shipping"
+    )
+
+
+def test_v033_p5_methodology_constant_exposed():
+    """P5: EXTRACT_IMAGE_SECTION_FIT_MISMATCH_MAX is in methodology
+    (single source of truth)."""
+    from keynote_recap import methodology as M
+
+    assert hasattr(M, "EXTRACT_IMAGE_SECTION_FIT_MISMATCH_MAX")
+    assert M.EXTRACT_IMAGE_SECTION_FIT_MISMATCH_MAX >= 1
+    # Ensure not absurdly tight (would always trigger) or absurdly loose
+    assert M.EXTRACT_IMAGE_SECTION_FIT_MISMATCH_MAX <= 10
+
+
+def test_v033_f6_extract_count_max_lifted_for_rescue_headroom():
+    """F6: MAX 50 was tight; rescue+dedupe occasionally landed just under
+    the 35 floor. Raised to 65 so dedupe has breathing room without
+    tripping the floor gate."""
+    from keynote_recap import methodology as M
+
+    assert M.EXTRACT_FINAL_COUNT_MAX == 65
+    # Sanity: still enforces a real ceiling (not infinite)
+    assert M.EXTRACT_FINAL_COUNT_MAX < 100

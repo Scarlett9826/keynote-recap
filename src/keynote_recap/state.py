@@ -140,6 +140,11 @@ class State(BaseModel):
     caption_verify_wrong_count: int = 0   # v0.3.1 (B2): 5.5.2 sample-10 wrong caption count
     caption_verify_path: str = ""
     lint_report_path: str = ""
+    # v0.3.3 P5: 5.5.4 image-section fit was a console-only warning before
+    # — wrong-section placement (e.g. Pixel Halo image inside Search chapter)
+    # could ship to users with quality_passed=True. Now feeds draft retry.
+    image_section_fit_passed: bool = True
+    image_section_fit_mismatch_count: int = 0
 
     # ─── Quality gate retry tracking (M5/M6) ───
     draft_retry_count: int = 0

@@ -102,12 +102,45 @@ class _OpenAIBackend(_Backend):
     """Existing v0.2.x behaviour — byte-identical to the original LLMClient."""
 
     def __init__(self, cfg: LLMConfig) -> None:
-        api_key = os.getenv(cfg.api_key_env)
+        # v0.3.2: do NOT hard-fail when env var is unset.
+        #
+        # The historical contract (re-affirmed by v0.2.5.1 hotfix 84da8d3)
+        # is: the LLM SDK is responsible for finding the key. Reasons we
+        # used to break:
+        #
+        # - corporate gateway / proxy injects a key via headers (not env)
+        # - agent host (e.g. opencode) intercepts traffic and adds auth
+        # - user prefers SDK's default env var (e.g. ANTHROPIC_API_KEY)
+        #   rather than the project's configured ``api_key_env``
+        # - SDK reads from a keychain / config file
+        #
+        # If the key is genuinely wrong, the first LLM call returns 401
+        # with a provider-authored message that is far more actionable
+        # than ours. Surface a yellow note at construct time so the
+        # user knows we couldn't pre-flight; that's all.
+        #
+        # Implementation note: the OpenAI SDK still raises in __init__
+        # if BOTH ``api_key`` is None AND no fallback env var is set.
+        # We therefore consult the SDK's primary fallback (``OPENAI_API_KEY``)
+        # before declaring the key truly unreachable. Only when nothing
+        # is found do we pass a sentinel that defers the failure to the
+        # first request.
+        api_key = (
+            os.getenv(cfg.api_key_env)
+            or os.getenv("OPENAI_API_KEY")
+            or None
+        )
         if not api_key:
-            raise RuntimeError(
-                f"Environment variable {cfg.api_key_env} not set. "
-                f"Export it or change `llm.api_key_env` in config."
+            print(
+                f"[keynote-recap] note: ${cfg.api_key_env} is unset; "
+                f"OpenAI SDK will defer auth resolution to first request "
+                f"(env / agent-host proxy / 401). A clearer error will "
+                f"surface there if no key is reachable.",
+                flush=True,
             )
+            # Sentinel to bypass the SDK's eager init check; real auth
+            # error will come from the server on the first call.
+            api_key = "sk-deferred-to-first-call"
         self.client = OpenAI(
             api_key=api_key,
             base_url=cfg.base_url,
@@ -204,12 +237,26 @@ class _AnthropicBackend(_Backend):
     def __init__(self, cfg: LLMConfig) -> None:
         from anthropic import Anthropic
 
-        api_key = os.getenv(cfg.api_key_env)
+        # v0.3.2: same relaxed contract as ``_OpenAIBackend.__init__`` —
+        # see that method's comment block for full rationale. Short
+        # version: SDK owns key resolution; we only emit an advisory.
+        # Anthropic SDK consults ``ANTHROPIC_API_KEY`` natively so we
+        # try the project's configured env var first, then fall through.
+        api_key = (
+            os.getenv(cfg.api_key_env)
+            or os.getenv("ANTHROPIC_API_KEY")
+            or None
+        )
         if not api_key:
-            raise RuntimeError(
-                f"Environment variable {cfg.api_key_env} not set. "
-                f"Export it or change `llm.api_key_env` in config."
+            print(
+                f"[keynote-recap] note: ${cfg.api_key_env} is unset; "
+                f"Anthropic SDK will defer auth resolution to first "
+                f"request (env / agent-host proxy / 401). A clearer "
+                f"error will surface there if no key is reachable.",
+                flush=True,
             )
+            # Sentinel; deferred-auth strategy mirrors the OpenAI backend.
+            api_key = "sk-ant-deferred-to-first-call"
 
         # The Anthropic SDK always prepends /v1 to the resource path
         # (it POSTs to {base_url}/v1/messages).  Strip a user-supplied

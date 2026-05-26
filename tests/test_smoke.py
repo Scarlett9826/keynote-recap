@@ -457,13 +457,18 @@ def test_llm_override_only_sets_draft():
 # ──────────────────────────────────────────────────────────────────────────────
 # Draft tier selection (P2 — small model support)
 # ──────────────────────────────────────────────────────────────────────────────
-def test_draft_tier_default_is_strict():
+def test_draft_tier_default_is_strict(tmp_path, monkeypatch):
     """M5: default tier is now 'strict' — methodology rules are hard contract.
 
     Users who run the tool with no flags should get the strictest quality gate
     (forbidden phrases, ≥ 8 citations, every chapter has 核心判断, etc).
     Pass --tier easy / --tier standard to relax for weaker models.
+
+    v0.3.2: isolate from the developer's ``~/.config/keynote-recap/config.yaml``
+    by pointing HOME at a clean tmp_path so the test asserts the *built-in
+    default*, not whatever the dev happens to have on disk.
     """
+    monkeypatch.setenv("HOME", str(tmp_path))
     from keynote_recap.config import load_config
 
     cfg = load_config()
@@ -1029,8 +1034,18 @@ def test_runtime_probe_research_no_verified():
     assert _probe_research_output(s) is None
 
 
-def test_preflight_models_unknown_blocks():
-    """v0.2.4 (M9.1): unverified vision model is a hard abort, no force backdoor."""
+def test_preflight_models_unknown_warns_but_proceeds():
+    """v0.3.2: unverified vision model is advisory, NOT a hard abort.
+
+    Rationale: gateway-prefixed names like ``mygw/claude-opus-4`` already
+    pass via the substring matcher in ``preflight.py`` (see
+    ``test_v032_preflight_recognises_gateway_prefixed_models``). What
+    remains as UNKNOWN is genuinely-new model IDs being tested; those
+    must surface a warning but not block the run — that's what the
+    quality banner is for.
+
+    KNOWN_TEXT_ONLY remains a hard abort (separate test below).
+    """
     from keynote_recap.cli import _preflight_models
     from keynote_recap.config import load_config
 
@@ -1039,9 +1054,103 @@ def test_preflight_models_unknown_blocks():
     cfg.llm.models.verify = "totally-unknown-vision-model-xyz"
 
     proceed, warnings = _preflight_models(cfg)
-    assert proceed is False
+    assert proceed is True, (
+        "v0.3.2: UNKNOWN models must proceed with advisory; this was a hard "
+        "abort in v0.2.4-v0.3.1 and broke gateway/proxy routed models."
+    )
     assert len(warnings) >= 2  # both extract and verify warned
     assert any("totally-unknown" in w for w in warnings)
+
+
+def test_v032_known_text_only_still_hard_aborts():
+    """v0.3.2 keeps KNOWN_TEXT_ONLY as a hard abort.
+
+    Text-only models on a vision stage silently produce garbage reports.
+    Preflight is the only place we catch it and the signal is worth
+    preserving.
+    """
+    from keynote_recap.cli import _preflight_models
+    from keynote_recap.config import load_config
+
+    cfg = load_config()
+    cfg.llm.models.extract = "deepseek-v3"  # KNOWN_TEXT_ONLY
+    cfg.llm.models.verify = "deepseek-v3"
+
+    proceed, warnings = _preflight_models(cfg)
+    assert proceed is False, "KNOWN_TEXT_ONLY must hard abort"
+    assert any("deepseek" in w.lower() for w in warnings)
+
+
+def test_v032_preflight_recognises_gateway_prefixed_models():
+    """v0.3.2: gateway/proxy-prefixed model IDs map to VERIFIED via substring.
+
+    Real-world model IDs from agent-host setups like opencode, openrouter,
+    your-gateway all wrap the underlying model with a routing prefix. Before
+    v0.3.2 these tripped the UNKNOWN hard abort even though the
+    underlying model was a verified Claude/Gemini/GPT-4o.
+    """
+    from keynote_recap.preflight import ModelTier, check_model_capability
+
+    cases = [
+        "your-company-llm-anthropic/your-vendor/claude-opus-4-7",
+        "your-company-llm-anthropic/your-vendor/claude-sonnet-4-6",
+        "openrouter/anthropic/claude-opus-4",
+        "gateway/openai/gpt-4o",
+        "your-gateway/gemini-2.5-pro",
+    ]
+    for name in cases:
+        r = check_model_capability(name)
+        assert r.tier == ModelTier.VERIFIED_MULTIMODAL, (
+            f"{name} should be recognised as VERIFIED via substring "
+            f"match; got {r.tier}"
+        )
+
+
+def test_v032_llm_client_does_not_raise_when_api_key_env_unset(monkeypatch, capsys):
+    """v0.3.2: LLMClient must NOT raise when api_key_env is unset.
+
+    Restores the v0.2.4 contract that the SDK owns key resolution. The
+    historical regression: corporate gateways / agent-host proxies
+    inject auth via headers (not env), and SDKs read from keychains /
+    config files / multiple env vars. Hard-failing in our __init__
+    on a single env var blocked all those paths.
+
+    The advisory message goes to stderr-equivalent (print to stdout).
+    A real 401 surfaces at the first LLM call with a provider message.
+    """
+    from keynote_recap.config import LLMConfig
+    from keynote_recap.llm_client import LLMClient
+
+    # Ensure both possible env vars are unset
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("FAKE_KEY", raising=False)
+
+    cfg = LLMConfig(api_key_env="FAKE_KEY")
+    # Must NOT raise
+    client = LLMClient(cfg)
+    assert client is not None
+
+    captured = capsys.readouterr()
+    assert "FAKE_KEY" in captured.out, (
+        "v0.3.2 expects an advisory mentioning the unset env var name"
+    )
+
+
+def test_v032_llm_client_anthropic_backend_does_not_raise_when_unset(monkeypatch, capsys):
+    """v0.3.2: same contract for the anthropic-native backend."""
+    from keynote_recap.config import LLMConfig
+    from keynote_recap.llm_client import LLMClient
+
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("FAKE_KEY", raising=False)
+
+    cfg = LLMConfig(provider="anthropic-native", api_key_env="FAKE_KEY")
+    client = LLMClient(cfg)
+    assert client is not None
+    captured = capsys.readouterr()
+    assert "FAKE_KEY" in captured.out
 
 
 def test_v024_preflight_models_no_force_kwarg():

@@ -250,21 +250,28 @@ def _preflight_env(cfg, output_dir: Path) -> list[str] | None:
 def _preflight_models(cfg) -> tuple[bool, list[str]]:
     """Print a model-capability summary; return (proceed, warnings).
 
-    v0.2.4 (M9.1): there is no ``--force`` backdoor anymore. If a vision
-    stage uses a known text-only or unverified model, the run aborts.
-    Reason: text-only models silently produce garbage reports, and users
-    blame keynote-recap. To use a custom model, add it to
-    ``preflight._VERIFIED_VISION_MODELS`` via PR.
+    v0.3.2: ``UNKNOWN`` is downgraded from hard abort to advisory warning.
+    Rationale: gateway-prefixed model names (``your-company-llm-anthropic/ppio/
+    pa/claude-opus-4-7`` etc.) and SDK-injected proxy routes generated a
+    flood of false-positive aborts in agent-host setups. The substring
+    matcher in ``preflight.py`` already recognises real claude/gemini/
+    gpt-4o under any prefix; what remains as ``UNKNOWN`` is genuinely
+    new model IDs that the user is testing — those should warn, not
+    block.
+
+    ``KNOWN_TEXT_ONLY`` remains a hard abort: text-only models on a
+    vision stage silently produce garbage and that signal is worth
+    preserving (preflight is the only place we catch it).
 
     Vision stages = ``extract`` (stage 3) + ``verify`` (stage 5.5.2):
 
     - ``VERIFIED_MULTIMODAL``  → ✓ green, proceed
     - ``KNOWN_TEXT_ONLY``       → ✗ red, hard abort
-    - ``UNKNOWN``               → ⚠ yellow, hard abort
+    - ``UNKNOWN``               → ⚠ yellow, proceed with advisory
 
-    Returns ``(proceed, warnings)``. Warnings list stays in the API for
-    state persistence even though, post-v0.2.4, a non-empty warnings
-    list always means proceed=False.
+    Returns ``(proceed, warnings)``. ``warnings`` is persisted into
+    ``state.preflight_model_warnings`` so the final report banner can
+    surface "ran with unverified model X" if quality looks off.
     """
     from .preflight import ModelTier, VERIFIED_MODELS_DOC, check_model_capability
 
@@ -288,36 +295,37 @@ def _preflight_models(cfg) -> tuple[bool, list[str]]:
             )
             has_text_only = True
             warnings.append(f"{stage_name} uses known text-only model {model_name}: {result.note}")
-        else:  # UNKNOWN
+        else:  # UNKNOWN — advisory only (v0.3.2)
             console.print(
                 f"  [yellow]⚠[/] {stage_name}: [cyan]{model_name}[/] — {result.note}"
             )
             has_unknown = True
             warnings.append(f"{stage_name} uses unverified model {model_name}: {result.note}")
 
-    blocked = has_text_only or has_unknown
-
-    if blocked:
+    if has_text_only:
         console.print()
-        if has_text_only:
-            console.print("[bold red]Aborted:[/] one or more vision stages use a "
-                          "known text-only model.")
-        else:
-            console.print("[bold yellow]Aborted:[/] one or more vision stages use a "
-                          "model not on the verified-multimodal list.")
+        console.print("[bold red]Aborted:[/] one or more vision stages use a "
+                      "known text-only model.")
         console.print()
         console.print(VERIFIED_MODELS_DOC)
         console.print()
         console.print(
-            "[dim]v0.2.4: --force was removed. To use a custom model, "
-            "submit a PR adding it to[/] "
-            "[cyan]src/keynote_recap/preflight.py::_VERIFIED_VISION_MODELS[/] "
-            "[dim]after manually verifying it produces correct output on a "
-            "small sample.[/]"
+            "[dim]v0.3.2: gateway-prefixed names like ``mygw/claude-opus-4`` "
+            "are now recognised as VERIFIED via substring match. Genuinely "
+            "new IDs surface as UNKNOWN and proceed with a warning. "
+            "KNOWN_TEXT_ONLY remains a hard abort because text-only "
+            "models silent-fail on vision stages.[/]"
         )
         return False, warnings
 
-    console.print()
+    if has_unknown:
+        console.print()
+        console.print("[yellow]Note:[/] one or more stages use an unverified "
+                      "model. Proceeding; quality banner will surface this. "
+                      "If output looks off, switch to a verified model:")
+        console.print(VERIFIED_MODELS_DOC)
+        console.print()
+
     return True, warnings
 
 

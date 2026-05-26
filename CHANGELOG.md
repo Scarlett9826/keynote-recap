@@ -4,6 +4,64 @@ All notable changes to **keynote-recap** are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.2] — Restore "in-window model works without re-entering api-key" (2026-05-26)
+
+### Fixed
+
+- **LLMClient no longer hard-fails when ``cfg.api_key_env`` is unset**.
+  v0.3.0 introduced the ``_OpenAIBackend`` / ``_AnthropicBackend`` split;
+  both backends ``raise RuntimeError`` in ``__init__`` if the configured
+  env var was missing. This broke every workflow where the LLM SDK is
+  expected to find the key on its own — corporate gateways injecting
+  auth via headers, agent-host proxies (opencode / claude-desktop /
+  cursor) routing traffic through internal endpoints, SDKs reading
+  from keychain or alternate env vars (``ANTHROPIC_API_KEY`` for the
+  anthropic-native backend), etc. v0.3.2 restores the v0.2.4 contract:
+  print an advisory note and let the SDK own resolution. The first LLM
+  call surfaces a real 401 with a provider-authored message if no key
+  is reachable. Aligns with the v0.2.5.1 hotfix that did the same for
+  ``preflight_env.check_api_key``.
+
+- **Preflight ``UNKNOWN`` model is now an advisory warning, not a hard
+  abort**. v0.2.4 made unverified models a blocker to prevent silent
+  garbage from text-only models on vision stages. The implementation
+  side-effect: gateway-prefixed model IDs like
+  ``your-company-llm-anthropic/your-vendor/claude-opus-4-7`` were routinely
+  hitting ``UNKNOWN`` and aborting the run, even though the substring
+  matcher in ``preflight.py`` already classifies them correctly as
+  VERIFIED. v0.3.2 splits the two cases: ``KNOWN_TEXT_ONLY`` stays a
+  hard abort (the silent-fail risk is real), but ``UNKNOWN`` proceeds
+  with a yellow advisory and is surfaced in the final quality banner.
+  This restores the workable v0.2.3-era behaviour for agent-host
+  setups that wrap models with routing prefixes.
+
+- **Test isolation hardening**: ``test_draft_tier_default_is_strict``
+  now sets ``HOME`` to a tmp_path so it asserts the *built-in default*
+  rather than whatever ``~/.config/keynote-recap/config.yaml`` the
+  developer happens to have. Pre-existing flake unrelated to v0.3.2
+  feature work but surfaced during this release's full-suite run.
+
+### Tests
+
+- 4 new regression tests in ``tests/test_smoke.py``:
+  - ``test_v032_llm_client_does_not_raise_when_api_key_env_unset``
+  - ``test_v032_llm_client_anthropic_backend_does_not_raise_when_unset``
+  - ``test_v032_known_text_only_still_hard_aborts``
+  - ``test_v032_preflight_recognises_gateway_prefixed_models``
+- 1 test renamed and re-asserted:
+  ``test_preflight_models_unknown_blocks`` →
+  ``test_preflight_models_unknown_warns_but_proceeds``.
+- Suite total: 180 → 194 (+14 net for v0.3.2).
+
+### Notes
+
+- This release does NOT touch image-quality gates, retry orchestration,
+  or any v0.3.1 contract. It is purely a model/env-stability hotfix.
+- Default models in ``config.py`` (``claude-sonnet-4`` / ``claude-opus-4``
+  / ``gpt-4o-mini`` / ``gemini-2.5-pro``) remain unchanged; if the
+  user's gateway 404s on bare names, ``--llm-all`` / ``KEYNOTE_RECAP_MODEL_ALL``
+  / ``llm.models.*`` in config.yaml still work as before.
+
 ## [0.3.1] — Image-quality hard gates + retry orchestration fix (2026-05-26)
 
 ### Added

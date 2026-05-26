@@ -1528,8 +1528,10 @@ def test_e2e_healthy_recap_passes_all_gates():
 def test_v023_methodology_module_exposes_locked_constants():
     """All 13 methodology constants must exist + agent parallel layer."""
     from keynote_recap import methodology as M
-    # Frame extract floor / ceiling (replaces user-tunable knobs)
-    assert M.EXTRACT_FINAL_COUNT_MIN == 30
+    # Frame extract floor / ceiling (replaces user-tunable knobs).
+    # v0.3.1: MIN raised 30→35 to align with prompts/03; see
+    # test_v031_methodology_constants for the new floor set.
+    assert M.EXTRACT_FINAL_COUNT_MIN == 35
     assert M.EXTRACT_FINAL_COUNT_MAX == 50
     # Segment-stage chunk policy
     assert M.SEGMENT_CHUNK_COUNT > 0
@@ -2505,3 +2507,17 @@ def test_v030_png_frames_use_image_png_media_type(monkeypatch, tmp_path):
     content = captured["content"]
     assert content[0]["source"]["media_type"] == "image/jpeg"
     assert content[1]["source"]["media_type"] == "image/png"
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# v0.3.1 — image quality hard gate constants (E1/E2/E3)
+# ──────────────────────────────────────────────────────────────────────────────
+def test_v031_methodology_constants():
+    """v0.3.1: image quality hard floor constants exist with correct values."""
+    from keynote_recap import methodology as M
+    assert M.EXTRACT_FINAL_COUNT_MIN == 35  # E1: was 30, now aligned with prompts/03
+    assert M.EXTRACT_LIVE_RATIO_MIN == 0.50  # E2: new, abort floor (prompt keeps 0.70 soft)
+    assert M.EXTRACT_PER_SECTION_MIN == 1  # E3: A8 硬约束
+    assert M.EXTRACT_PER_MAINLINE_MIN == 4  # E3: 主线 4-6 张
+    assert M.EXTRACT_CAPTION_VERIFY_WRONG_MAX == 1  # B2: tolerance for vision LLM hiccup
+    assert M.EXTRACT_INFO_DENSITY_MIN == 0.70

@@ -56,16 +56,40 @@ SEGMENT_CHUNK_FLOOR: int = 3
 # ──────────────────────────────────────────────────────────────────────────────
 # Stage 3 — extract (vision LLM filter)
 # ──────────────────────────────────────────────────────────────────────────────
-# Stage 3 internal target band. Too low -> sparse report; too high ->
-# information dilution. Verified empirically against IO/keynote-style
-# 60-90min videos.
-EXTRACT_FINAL_COUNT_MIN: int = 30
+# Stage 3 internal target band. v0.3.1: MIN raised 30→35 to align with
+# prompts/03-extract-vision-filter.md (which has always asked for 35-50).
+# Empirically, < 35 frames on a 60-90min keynote leaves 6+ subsections
+# with 0 images (verified Xiaomi 2026-05-20 launch produced only 27 frames
+# with 6 chapters uncovered → triggered v0.3.1 hard-gate work).
+EXTRACT_FINAL_COUNT_MIN: int = 35
 EXTRACT_FINAL_COUNT_MAX: int = 50
 
 # Three-principle thresholds. info_density / relevance below 0.7 produces
-# pretty-but-empty frames or off-topic frames.
-EXTRACT_INFO_DENSITY_MIN: float = 0.7
-EXTRACT_RELEVANCE_MIN: float = 0.7
+# pretty-but-empty frames or off-topic frames. v0.3.1 wires this into a
+# code-side hard filter (was prompt-only soft target before).
+EXTRACT_INFO_DENSITY_MIN: float = 0.70
+EXTRACT_RELEVANCE_MIN: float = 0.70
+
+# v0.3.1 — live-ratio abort floor. Two-tier with prompt:
+#   - prompt 03 still asks for 0.70 (soft target; vision LLM aims for it)
+#   - this 0.50 is the abort floor (raise ExtractFloorError below it)
+# Why not also 0.70 as abort: retry rarely flips a 35%→70% live ratio in
+# one pass; 0.50 says "现场图至少占多数" — a clear-signal floor that
+# distinguishes a real keynote recap from a marketing-render slideshow.
+EXTRACT_LIVE_RATIO_MIN: float = 0.50
+
+# v0.3.1 — A8 硬约束代码兑现：每板块至少 1 张图。
+# methodology/filter-three-principles.md 写过"绝不接受这个章节没合适的图"，
+# 但 v0.3.0 之前没有代码兜底；verify 5.5.1 只报警不 abort。
+EXTRACT_PER_SECTION_MIN: int = 1
+
+# v0.3.1 — 主线章节图量下限。方法论文档"主线 4-6 张/章"。
+# 主线判定 = transcript 提及次数 top-2 的 ## 章节（detect_mainline_titles）。
+EXTRACT_PER_MAINLINE_MIN: int = 4
+
+# v0.3.1 — caption verify sample 10 张里 wrong 超过此数 → 触发 stage 3 retry。
+# 1 张容错（vision LLM 偶发幻觉），≥ 2 张说明系统性看错图，必须重跑。
+EXTRACT_CAPTION_VERIFY_WRONG_MAX: int = 1
 
 
 # ──────────────────────────────────────────────────────────────────────────────

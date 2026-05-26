@@ -3002,3 +3002,178 @@ def test_v031_draft_bucket_falls_back_to_caption_when_no_alt_short():
     )
     txt = _format_buckets_for_prompt([("一、demo", [f])])
     assert "完整的图说明文字描述了具体内容" in txt
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# v0.3.1 Task 8 — 19-item audit checklist (code-level enforcement)
+# ──────────────────────────────────────────────────────────────────────────────
+# Each test below corresponds to a specific finding from the v0.3.0 真产出
+# audit (see docs/plans/2026-05-26-v031-image-quality-hard-gates.md).
+# A green pass here means the code-level guard exists; end-to-end production
+# verification (running the full pipeline against real video) is documented
+# separately and intentionally NOT run in CI (LLM cost + non-determinism).
+
+def test_v031_audit_A1_count_floor_is_35():
+    from keynote_recap import methodology as M
+    assert M.EXTRACT_FINAL_COUNT_MIN == 35, "A1: count floor must be 35"
+
+
+def test_v031_audit_A2_prompt_and_code_count_consistent():
+    """A2: prompts/03 advertises ≥ 35; code enforces 35."""
+    from pathlib import Path
+    from keynote_recap import methodology as M
+    p = Path(__file__).resolve().parents[1] / "prompts" / "03-extract-vision-filter.md"
+    text = p.read_text()
+    assert "35" in text, "prompts/03 should mention 35 (consistent with code)"
+    assert M.EXTRACT_FINAL_COUNT_MIN == 35
+
+
+def test_v031_audit_A3_live_ratio_hard_floor_50pct():
+    from keynote_recap import methodology as M
+    assert M.EXTRACT_LIVE_RATIO_MIN == 0.50, "A3: live ratio hard floor 0.50"
+
+
+def test_v031_audit_A4_info_density_floor_enforced():
+    from keynote_recap import methodology as M
+    from keynote_recap.stages.extract import _enforce_density_floor
+    assert M.EXTRACT_INFO_DENSITY_MIN == 0.70
+    # callable exists and is the actual gate
+    assert callable(_enforce_density_floor)
+
+
+def test_v031_audit_A5_per_section_floor_check_exists():
+    from keynote_recap.stages.verify import check_per_section_floor
+    assert callable(check_per_section_floor)
+
+
+def test_v031_audit_A6_per_mainline_floor_constant():
+    from keynote_recap import methodology as M
+    assert M.EXTRACT_PER_MAINLINE_MIN == 4
+    assert M.EXTRACT_PER_SECTION_MIN == 1
+
+
+def test_v031_audit_B1_caption_wrong_persists_in_state():
+    from keynote_recap.state import State
+    s = State(url="x", output_dir="/tmp/x")
+    assert hasattr(s, "caption_verify_wrong_count")
+
+
+def test_v031_audit_B2_caption_wrong_triggers_extract_retry():
+    from keynote_recap import methodology as M
+    from keynote_recap.pipeline import _collect_extract_failures
+    from keynote_recap.state import State
+    s = State(url="x", output_dir="/tmp/x")
+    s.image_mix_passed = True
+    s.topic_coverage_passed = True
+    s.per_section_floor_passed = True
+    s.caption_verify_wrong_count = M.EXTRACT_CAPTION_VERIFY_WRONG_MAX + 1
+    fails = _collect_extract_failures(s)
+    assert any("caption" in f.lower() for f in fails)
+
+
+def test_v031_audit_B3_section_fit_uses_subsection():
+    """B3 covered by test_v031_section_fit_subsection_grain_*; this is a sentinel
+    that the implementation references subsection tracking.
+    """
+    from pathlib import Path
+    p = Path(__file__).resolve().parents[2] / "src/keynote_recap/stages/verify.py"
+    if not p.exists():
+        # tests run from project root, adjust
+        p = Path(__file__).resolve().parents[1] / "src/keynote_recap/stages/verify.py"
+    text = p.read_text()
+    assert "current_subsection_keywords" in text, "B3: subsection-aware code missing"
+
+
+def test_v031_audit_C1_retry_actually_reruns_verify():
+    """C1: retry block re-runs verify (textual sentinel — full path in pipeline)."""
+    from pathlib import Path
+    p = Path(__file__).resolve().parents[1] / "src/keynote_recap/pipeline.py"
+    text = p.read_text()
+    # The retry block must call verify after extract
+    assert 'STAGES["verify"][1](state, config)' in text
+
+
+def test_v031_audit_C2_quality_passed_default_false():
+    from keynote_recap.state import State
+    s = State(url="x", output_dir="/tmp/x")
+    assert s.quality_passed is False, "C2: must default False (silent-unsigned bug)"
+
+
+def test_v031_audit_C3_extract_run_accepts_retry_context():
+    import inspect
+    from keynote_recap.stages import extract
+    assert "retry_context" in inspect.signature(extract.run).parameters
+
+
+def test_v031_audit_C4_pipeline_recollects_after_retry():
+    """C4: final assessment uses _collect_quality_failures(state) on
+    post-retry state — sentinel via source.
+    """
+    from pathlib import Path
+    p = Path(__file__).resolve().parents[1] / "src/keynote_recap/pipeline.py"
+    text = p.read_text()
+    assert "_collect_quality_failures(state)" in text
+    # and the call appears AFTER the retry blocks (line order check)
+    lines = text.split("\n")
+    retry_idx = next(i for i, line in enumerate(lines) if "extract.run(state, config, retry_context=extract_fails)" in line)
+    final_idx = next(i for i, line in enumerate(lines) if "still_failing = _collect_quality_failures(state)" in line)
+    assert final_idx > retry_idx, "C4: final assessment must be AFTER retry"
+
+
+def test_v031_audit_D1_strict_prompt_briefing_rule():
+    from pathlib import Path
+    p = Path(__file__).resolve().parents[1] / "prompts" / "05-draft-write-strict.md"
+    text = p.read_text()
+    assert "简报体" in text and "词典释义" in text
+
+
+def test_v031_audit_D2_alt_short_field_and_schema():
+    from keynote_recap.state import SelectedFrame
+    f = SelectedFrame(filename="x.jpg", timestamp_s=0.0, category="other",
+                      caption="c", recommended_section="", info_density=0.7,
+                      relevance=0.7)
+    assert hasattr(f, "alt_short")
+    from pathlib import Path
+    p = Path(__file__).resolve().parents[1] / "prompts" / "03-extract-vision-filter.md"
+    assert "alt_short" in p.read_text()
+
+
+def test_v031_audit_D3_strict_prompt_table_constraint():
+    from pathlib import Path
+    p = Path(__file__).resolve().parents[1] / "prompts" / "05-draft-write-strict.md"
+    text = p.read_text()
+    assert "并列" in text and "表格" in text and "| 档位 |" in text
+
+
+def test_v031_audit_E1_count_constant_consistent():
+    """E1: 35 lives in methodology.py (single source of truth)."""
+    from pathlib import Path
+    from keynote_recap import methodology as M
+    p = Path(__file__).resolve().parents[1] / "src/keynote_recap/methodology.py"
+    assert "EXTRACT_FINAL_COUNT_MIN" in p.read_text()
+    assert M.EXTRACT_FINAL_COUNT_MIN == 35
+
+
+def test_v031_audit_E2_live_ratio_constant_centralized():
+    from keynote_recap import methodology as M
+    assert hasattr(M, "EXTRACT_LIVE_RATIO_MIN")
+
+
+def test_v031_audit_E3_per_section_constants_present():
+    from keynote_recap import methodology as M
+    assert hasattr(M, "EXTRACT_PER_SECTION_MIN")
+    assert hasattr(M, "EXTRACT_PER_MAINLINE_MIN")
+
+
+def test_v031_audit_full_19_findings_have_guards():
+    """Sentinel: count of v031_audit_* tests matches 19 findings + 1 total."""
+    import sys
+    mod = sys.modules[__name__]
+    audit_tests = [
+        n for n in dir(mod)
+        if n.startswith("test_v031_audit_") and callable(getattr(mod, n))
+    ]
+    # 19 individual finding tests + this sentinel = 20
+    assert len(audit_tests) >= 19, (
+        f"expected >= 19 audit tests, got {len(audit_tests)}: {audit_tests}"
+    )

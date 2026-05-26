@@ -4,6 +4,89 @@ All notable changes to **keynote-recap** are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.1] — Image-quality hard gates + retry orchestration fix (2026-05-26)
+
+### Added
+
+- **Hard image-quality floor at stage 3 exit** (group A). Stage 3 now
+  raises ``ExtractFloorError`` if the post-filter selected_frames pool
+  fails any of: total count ≥ 35 (was an advisory 30), info_density
+  ≥ 0.70 (frames below the floor are dropped before the count check),
+  live ratio ≥ 50% (hard abort threshold; prompt still targets ≥ 70%
+  as soft goal). Triggers extract retry with a directive prompt. The
+  ``rescue`` path now also defaults rescued frames to info_density
+  0.70 so they survive the new floor.
+
+- **Per-section / per-mainline image-floor gate (5.5.1b)** (A5/A6).
+  After 5.5.1 chapter coverage, verify checks: every chapter has ≥ 1
+  image, and the two transcript-derived "mainline" chapters have ≥ 4
+  images each. Failures enter ``_collect_extract_failures`` and trigger
+  a stage-3 retry with the per-section floor reason fed into the prompt.
+
+- **Caption-verify wrong count → retry trigger (5.5.2)** (B1/B2).
+  ``State.caption_verify_wrong_count`` now persists the 5.5.2 sample-10
+  wrong count; ``> EXTRACT_CAPTION_VERIFY_WRONG_MAX`` (default 1) enters
+  the extract failure list with a "describe ONLY what is literally
+  visible" retry directive. v0.3.0 silently logged 3 wrong captions
+  per run and proceeded; v0.3.1 retries.
+
+- **Retry guidance directive** (C3). New ``_build_retry_directive``
+  helper renders the prior round's failure list into a [RETRY GUIDANCE]
+  block injected at the top of every stage-3 batch user_text. Failures
+  carry per-category fix instructions (image-mix → more live frames;
+  caption-verify → only literal pixels; per-section floor → spread
+  across timeline; etc.). Retry attempts are no longer blind.
+
+- **alt_short field on SelectedFrame** (D2). Short alt text (≤ 25
+  Chinese chars) for screen readers and concise listings; populated
+  by stage-3 vision LLM via the prompts/03 schema. Render falls back
+  to caption[:60] when alt_short is empty (legacy frames).
+
+- **Briefing-style first-sentence rule (strict §10)** (D1). prompts/05
+  now forbids 词典释义体, 仪式开场, 议程预告 in chapter openings;
+  requires 数字开打 / 时间开打 / 判断开打 mode.
+
+- **Parallel-info → table hard constraint (strict §11)** (D3). When
+  3+ products / 3+ versions / 3+ price tiers / 3+ time-series points
+  appear, must use a markdown table, not 散文罗列.
+
+### Changed
+
+- **``State.quality_passed`` default flipped True → False** (C2 root
+  cause). Any early-return path (retry exception, ``--start-stage 6``
+  skipping verify, pipeline abort) now leaves the field False and
+  ``render._compute_banner`` synthesizes a red banner with "Quality
+  gate did not run" — silent unsigned reports are blocked. Real bug
+  from your-company 2026-05-20: state had 5 gates fail but quality_passed=True
+  because the True default leaked when final assessment never executed.
+
+- **5.5.4 image-section fit considers ### subsections** (B3). The
+  static keyword-overlap heuristic now tracks the most-recent ###
+  subsection title within each chapter and includes its tokens (plus
+  3-char sliding-window n-grams of compound tokens) in the hit pool.
+  Real bug: factory frames inside ``### 8.3 制造底气—武汉智能工厂``
+  were falsely flagged because the parent ``## 八、ACME空调`` chapter
+  title doesn't contain 工厂.
+
+- **Extract methodology constants centralized** (E1/E2/E3). New
+  exports in ``methodology.py``: ``EXTRACT_FINAL_COUNT_MIN`` (35,
+  was 30 hard-coded inconsistently), ``EXTRACT_LIVE_RATIO_MIN`` (0.50,
+  hard-floor distinct from prompt's 0.70 soft target),
+  ``EXTRACT_INFO_DENSITY_MIN`` (0.70), ``EXTRACT_PER_SECTION_MIN`` (1),
+  ``EXTRACT_PER_MAINLINE_MIN`` (4), ``EXTRACT_CAPTION_VERIFY_WRONG_MAX``
+  (1).
+
+### Fixed
+
+- v0.3.0 retry orchestration silently published a 22-image / 5-failed-
+  gate / quality_passed=True report from the your-company 2026-05-20 run.
+  Combined effect of the changes above closes 19 audit findings
+  documented in ``docs/plans/2026-05-26-v031-image-quality-hard-gates.md``.
+
+- ``state.SelectedFrame.source`` Literal now includes
+  ``frame_extract_rescue`` so rescue path doesn't trigger pydantic
+  ValidationError on retry.
+
 ## [0.3.0] — Anthropic-native provider support (2026-05-25)
 
 ### Added

@@ -147,7 +147,18 @@ def run(state: State, cfg: Config, retry_context: list[str] | None = None) -> St
         Pydantic model; concurrent .append on its lists is unsafe).
         """
         batch_start, batch = item
-        batch_paths = [frames_dir / c.filename for c in batch]
+        # Frames may have been moved to frames/ on a prior successful stage 3 run;
+        # fall back to final_dir if frames_raw copy is gone (retry scenario).
+        final_dir_inner = output_dir / "frames"
+        def _resolve_frame(filename: str) -> Path:
+            p = frames_dir / filename
+            if p.exists():
+                return p
+            q = final_dir_inner / filename
+            if q.exists():
+                return q
+            raise FileNotFoundError(f"Frame not found in frames_raw/ or frames/: {filename}")
+        batch_paths = [_resolve_frame(c.filename) for c in batch]
         user_text = _build_user_text(batch, transcript, title, duration, batch_start)
         # v0.3.1 C3: prepend retry guidance if this is a retry attempt
         retry_directive = _build_retry_directive(retry_context)

@@ -48,12 +48,61 @@ class ExtractFloorError(RuntimeError):
     """
 
 
-def run(state: State, cfg: Config) -> State:
-    """Execute stage 3."""
+def _build_retry_directive(failures: list[str] | None) -> str:
+    """v0.3.1 C3: render a [RETRY GUIDANCE] block from the prior attempt's
+    quality-gate failures, to be injected at the top of the stage-3 vision
+    prompt so the LLM is aware of what went wrong last time.
+
+    Empty / None → empty string (first attempt, not a retry).
+    """
+    if not failures:
+        return ""
+    lines = [
+        "=" * 70,
+        "[RETRY GUIDANCE — previous attempt failed quality gates]",
+        "",
+        "The previous extraction round produced output that failed these checks:",
+        "",
+    ]
+    for f in failures:
+        lines.append(f"  - {f}")
+    lines.extend([
+        "",
+        "This run MUST address each failure:",
+        "  * If 'image mix' failed: select MORE live keynote frames (≥ 50%);",
+        "    reduce marketing renders / inserted slides.",
+        "  * If 'caption verify' failed: describe ONLY what is literally visible",
+        "    in the frame — no inference, no extrapolation, no hallucination.",
+        "    Wrong captions = LLM described frames it never actually saw.",
+        "  * If 'per-section floor' failed: ensure each chapter has ≥ 1 frame,",
+        "    mainline chapters have ≥ 4 frames; spread selection across the timeline.",
+        "  * If 'topic coverage' failed: high-frequency transcript topics must",
+        "    have associated frames; do not skip topics that recur in subtitles.",
+        "  * If 'info density' failed: select frames with readable text/numbers/",
+        "    diagrams (info_density ≥ 0.70); avoid pure-emotion / pure-portrait shots.",
+        "=" * 70,
+        "",
+    ])
+    return "\n".join(lines)
+
+
+def run(state: State, cfg: Config, retry_context: list[str] | None = None) -> State:
+    """Execute stage 3.
+
+    v0.3.1 C3: ``retry_context`` is the prior attempt's quality-gate failure
+    list; when non-empty, _build_retry_directive renders it as a [RETRY GUIDANCE]
+    block injected at the top of every batch's user_text — telling the vision
+    LLM what to fix this round. Pipeline passes this on second invocation.
+    """
     if not state.candidate_frames:
         raise RuntimeError("Stage 3 requires stage 2 (candidate_frames) to be done first.")
 
     console.print("[bold]Stage 3 — vision filter (three principles)[/]")
+    if retry_context:
+        console.print(
+            f"  [yellow]\u26a0 Retry mode:[/] injecting {len(retry_context)} "
+            f"failure(s) from prior attempt into prompt as [RETRY GUIDANCE]"
+        )
 
     output_dir = Path(state.output_dir)
     frames_dir = output_dir / "frames_raw"
@@ -100,6 +149,10 @@ def run(state: State, cfg: Config) -> State:
         batch_start, batch = item
         batch_paths = [frames_dir / c.filename for c in batch]
         user_text = _build_user_text(batch, transcript, title, duration, batch_start)
+        # v0.3.1 C3: prepend retry guidance if this is a retry attempt
+        retry_directive = _build_retry_directive(retry_context)
+        if retry_directive:
+            user_text = retry_directive + "\n" + user_text
 
         try:
             text, in_t, out_t = client.chat_with_images(

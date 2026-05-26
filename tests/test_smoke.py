@@ -619,8 +619,9 @@ def test_state_has_quality_gate_fields():
     assert hasattr(s, "coverage_check_passed")
     # Retry counter starts at 0
     assert s.draft_retry_count == 0
-    # Quality status defaults: passed=True, no warnings
-    assert s.quality_passed is True
+    # v0.3.1 C2: defaults to False so early-return paths surface a banner.
+    # Only an explicit final-assessment pass sets True.
+    assert s.quality_passed is False
     assert s.final_quality_warnings == []
 
 
@@ -707,7 +708,8 @@ def test_render_no_banner_when_quality_passed():
         s = State.new(url="https://x", output_dir=str(outdir))
         s.video = VideoMeta(url="https://x", title="Test")
         s.report_md_path = str(md)
-        # quality_passed defaults to True; preflight/runtime warnings empty
+        # v0.3.1 C2: must explicitly set True since default flipped to False
+        s.quality_passed = True
 
         cfg = load_config()
         s = render_run(s, cfg)
@@ -855,6 +857,7 @@ def test_render_yellow_banner_for_env_warnings():
         s.video = VideoMeta(url="https://x", title="Test")
         s.report_md_path = str(md)
         s.preflight_env_warnings = ["disk: only 2.0 GB free at /tmp"]
+        s.quality_passed = True  # v0.3.1 C2: default flipped, set explicitly
 
         cfg = load_config()
         s = render_run(s, cfg)
@@ -900,6 +903,7 @@ def test_render_yellow_banner_for_unverified_model():
             "research": "verified_multimodal",
             "verify": "unknown",
         }
+        s.quality_passed = True  # v0.3.1 C2: default flipped, set explicitly
 
         cfg = load_config()
         s = render_run(s, cfg)
@@ -931,6 +935,7 @@ def test_render_yellow_banner_for_runtime_probe():
         s.runtime_warnings = [
             "stage 3 only produced 2 frames (< 5). Vision model may be weak."
         ]
+        s.quality_passed = True  # v0.3.1 C2: default flipped, set explicitly
 
         cfg = load_config()
         s = render_run(s, cfg)
@@ -2804,3 +2809,91 @@ def test_v031_section_fit_unchanged_when_no_subsection():
     # （这个测试验证不会因改动引入新的 false positive）
     # 至少不应该报错；具体是否 mismatch 取决于既有 heuristic
     assert isinstance(r.get("mismatches"), list)
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# v0.3.1 Task 6 — retry orchestration fixes (C1/C2/C3/C4)
+# ──────────────────────────────────────────────────────────────────────────────
+def test_v031_quality_passed_defaults_to_false():
+    """v0.3.1 C2 root cause: quality_passed default must be False so any
+    early-return path (retry exception, --start-stage skip, pipeline error)
+    leaves quality_passed=False — banner gets rendered.
+
+    Real bug from Xiaomi 2026-05-20: state had 5 gates fail but quality_passed=True
+    because final assessment never executed, leaving the default True intact.
+    """
+    from keynote_recap.state import State
+    s = State(url="x", output_dir="/tmp/x")
+    assert s.quality_passed is False, (
+        "v0.3.1 C2: quality_passed must default to False; "
+        "only explicit final-assessment pass sets it True"
+    )
+
+
+def test_v031_extract_run_accepts_retry_context():
+    """v0.3.1 C3: stages/extract.py::run accepts retry_context list[str]
+    so retry runs are not blind — failures from previous attempt feed back
+    into stage 3 vision prompt as [RETRY GUIDANCE].
+    """
+    import inspect
+    from keynote_recap.stages import extract
+    sig = inspect.signature(extract.run)
+    assert "retry_context" in sig.parameters, (
+        "v0.3.1 C3: extract.run must accept retry_context parameter"
+    )
+    p = sig.parameters["retry_context"]
+    assert p.default is None or p.default == [], (
+        f"retry_context should default to None or [], got {p.default!r}"
+    )
+
+
+def test_v031_build_retry_directive_renders_failures():
+    """v0.3.1 C3: _build_retry_directive helper takes failure list and
+    renders a RETRY GUIDANCE block to inject into stage 3 prompt.
+    """
+    from keynote_recap.stages.extract import _build_retry_directive
+    fails = [
+        "5.5.6 image mix: total frames < 35 or live ratio < 50%",
+        "5.5.2 caption verify: 3 wrong captions",
+    ]
+    d = _build_retry_directive(fails)
+    assert "RETRY" in d.upper()
+    assert "image mix" in d.lower() or "5.5.6" in d
+    assert "caption" in d.lower() or "5.5.2" in d
+
+
+def test_v031_build_retry_directive_empty_returns_empty():
+    """No failures → empty directive (first attempt, not a retry)."""
+    from keynote_recap.stages.extract import _build_retry_directive
+    assert _build_retry_directive([]) == ""
+    assert _build_retry_directive(None) == ""
+
+
+def test_v031_render_synthesizes_red_banner_when_verify_skipped():
+    """v0.3.1 C2: if quality_passed=False AND no final_quality_warnings
+    (verify never ran / early exit / --start-stage skip), render must
+    synthesize a warning so a red banner appears — silent unsigned reports
+    are the exact bug we're fixing.
+    """
+    import tempfile
+    from pathlib import Path
+    from keynote_recap.config import load_config
+    from keynote_recap.stages.render import run as render_run
+    from keynote_recap.state import State, VideoMeta
+    with tempfile.TemporaryDirectory() as tmp:
+        outdir = Path(tmp)
+        md = outdir / "report.md"
+        md.write_text("# Test\n\n## 一、demo\n\nbody\n")
+        s = State.new(url="https://x", output_dir=str(outdir))
+        s.video = VideoMeta(url="https://x", title="Test")
+        s.report_md_path = str(md)
+        # verify never ran: quality_passed left at default False, warnings empty
+        assert s.quality_passed is False
+        assert s.final_quality_warnings == []
+        cfg = load_config()
+        s = render_run(s, cfg)
+        html = Path(s.report_html_path).read_text()
+        assert '<div class="quality-banner quality-banner-red">' in html, (
+            "v0.3.1 C2: verify-skipped path must produce red banner, not silent"
+        )
+        assert "Quality gate did not run" in html or "未通过项目质量门" in html

@@ -139,7 +139,12 @@ class State(BaseModel):
     draft_retry_count: int = 0
     extract_retry_count: int = 0          # M6: stage 3 retried once for image-mix/topic-coverage
     final_quality_warnings: list[str] = Field(default_factory=list)
-    quality_passed: bool = True
+    # v0.3.1 C2: defaults to False so any early-return path (retry exception,
+    # --start-stage skipping verify, pipeline error) leaves this False and the
+    # banner gets rendered. Only an explicit final-assessment pass sets True.
+    # Real bug from your-company 2026-05-20: 5 gates fail but quality_passed=True
+    # because final assessment never executed and the True default leaked.
+    quality_passed: bool = False
 
     # ─── Expectation-management warnings (M7 / v0.2.2) ───
     # Surfaced both at stage banners and in the final HTML report so users can

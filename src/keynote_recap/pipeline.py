@@ -329,7 +329,8 @@ def run_pipeline(
                 state.last_completed_stage = 2.0
                 state.save()
                 try:
-                    state = STAGES["extract"][1](state, config)
+                    # v0.3.1 C3: feed prior failures to extract so it can target them
+                    state = extract.run(state, config, retry_context=extract_fails)
                     # research is expensive and not affected by frame selection;
                     # only re-run if research_notes_path is missing
                     if not state.research_notes_path:
@@ -342,7 +343,9 @@ def run_pipeline(
                     if debug:
                         raise
                     return state
-                # Re-collect after stage 3 retry (may now reveal pure-draft issues)
+                # v0.3.1 C4: re-collect after stage 3 retry — extract gates may
+                # now pass even if draft gates still fail; the Tier-2 draft retry
+                # block below will pick up only the still-failing draft issues.
 
             # Tier 2: draft retry
             draft_fails = _collect_draft_failures(state)

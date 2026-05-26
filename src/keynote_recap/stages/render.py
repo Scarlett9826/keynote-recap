@@ -466,10 +466,21 @@ def _build_banner(state: State) -> str:
 
     Red takes precedence over yellow when both apply.
     """
-    quality_failed = (
-        not getattr(state, "quality_passed", True)
-        and getattr(state, "final_quality_warnings", [])
-    )
+    # v0.3.1 C2: quality_passed defaults to False now. Three cases:
+    #  (a) explicit pass:    quality_passed=True  → no red banner.
+    #  (b) explicit fail:    quality_passed=False AND final_quality_warnings non-empty.
+    #  (c) implicit fail:    quality_passed=False AND no warnings — verify never ran
+    #      (early exit, --start-stage skipped 5.5, retry exception). Treat as red
+    #      with a synthetic warning so the user sees that the gate was not enforced.
+    explicit_pass = getattr(state, "quality_passed", False)
+    final_warnings = list(getattr(state, "final_quality_warnings", []) or [])
+    if not explicit_pass and not final_warnings:
+        final_warnings = [
+            "Quality gate did not run (verify stage skipped or aborted before "
+            "reaching final assessment). Report content has NOT been validated; "
+            "re-run `keynote-recap recap-and-verify` to enforce gates."
+        ]
+    quality_failed = (not explicit_pass) and bool(final_warnings)
     env_warnings = list(getattr(state, "preflight_env_warnings", []) or [])
     model_warnings = list(getattr(state, "preflight_model_warnings", []) or [])
     runtime_warnings = list(getattr(state, "runtime_warnings", []) or [])
@@ -495,7 +506,7 @@ def _build_banner(state: State) -> str:
 
     if quality_failed:
         items = "".join(
-            f"<li>{_escape(w)}</li>" for w in state.final_quality_warnings
+            f"<li>{_escape(w)}</li>" for w in final_warnings
         )
         return f"""
 <div class="quality-banner quality-banner-red">

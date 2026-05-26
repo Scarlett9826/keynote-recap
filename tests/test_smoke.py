@@ -2604,3 +2604,92 @@ def test_v031_extract_passes_when_floors_met():
     ]
     # 不抛异常 = 通过
     _check_extract_floors(frames, count_min=35, live_ratio_min=0.50)
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# v0.3.1 Task 3 — per-section / per-mainline image floor (A5/A6)
+# ──────────────────────────────────────────────────────────────────────────────
+def test_v031_per_section_floor_pass():
+    """v0.3.1 A5: 每个 ## 章节 ≥ 1 张图 → pass."""
+    from keynote_recap.stages.verify import check_per_section_floor
+    md = """## 一、A
+![alt](frames/a.jpg)
+## 二、B
+![alt](frames/b.jpg)
+"""
+    r = check_per_section_floor(
+        md, per_section_min=1, mainline_titles=set(), per_mainline_min=4
+    )
+    assert r["all_pass"] is True
+    assert r["sections_below_floor"] == []
+    assert r["mainline_below_floor"] == []
+
+
+def test_v031_per_section_floor_fails_empty_section():
+    """v0.3.1 A5: 章节 0 张图 → fail."""
+    from keynote_recap.stages.verify import check_per_section_floor
+    md = """## 一、A
+![alt](frames/a.jpg)
+## 二、B
+some text but no image
+## 三、C
+![alt](frames/c.jpg)
+"""
+    r = check_per_section_floor(
+        md, per_section_min=1, mainline_titles=set(), per_mainline_min=4
+    )
+    assert r["all_pass"] is False
+    assert any("二" in s for s in r["sections_below_floor"])
+    assert r["mainline_below_floor"] == []
+
+
+def test_v031_per_mainline_floor_fails():
+    """v0.3.1 A6: 主线章节 < 4 张 → fail."""
+    from keynote_recap.stages.verify import check_per_section_floor
+    md = """## 一、主线
+![alt](frames/a.jpg)
+![alt](frames/b.jpg)
+## 二、其他
+![alt](frames/c.jpg)
+"""
+    r = check_per_section_floor(
+        md,
+        per_section_min=1,
+        mainline_titles={"一、主线"},
+        per_mainline_min=4,
+    )
+    assert r["all_pass"] is False
+    assert any("主线" in s for s in r["mainline_below_floor"])
+
+
+def test_v031_per_mainline_floor_pass_with_4():
+    """v0.3.1 A6: 主线 = 4 张 (= floor) → pass."""
+    from keynote_recap.stages.verify import check_per_section_floor
+    md = """## 一、主线
+![](frames/a.jpg)
+![](frames/b.jpg)
+![](frames/c.jpg)
+![](frames/d.jpg)
+## 二、其他
+![](frames/e.jpg)
+"""
+    r = check_per_section_floor(
+        md,
+        per_section_min=1,
+        mainline_titles={"一、主线"},
+        per_mainline_min=4,
+    )
+    assert r["all_pass"] is True
+
+
+def test_v031_per_section_floor_collect_failure_in_extract_failures():
+    """v0.3.1 wiring: per_section_floor_passed=False enters
+    _collect_extract_failures so retry orchestration can pick it up."""
+    from keynote_recap.pipeline import _collect_extract_failures
+    from keynote_recap.state import State
+    s = State(url="x", output_dir="/tmp/x")
+    s.image_mix_passed = True
+    s.topic_coverage_passed = True
+    s.per_section_floor_passed = False
+    fails = _collect_extract_failures(s)
+    assert any("per-section" in f.lower() or "5.5.1b" in f for f in fails)

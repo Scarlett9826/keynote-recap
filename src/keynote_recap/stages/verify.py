@@ -14,6 +14,7 @@ from pathlib import Path
 
 from rich.console import Console
 
+from .. import methodology as M
 from ..config import Config
 from ..cost_tracker import track
 from ..llm_client import LLMClient
@@ -107,6 +108,112 @@ def check_coverage(report_md: str) -> dict:
         "missing": missing,
         "all_pass": len(missing) == 0,
     }
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 5.5.1b per-section / per-mainline image floor (v0.3.1, A5/A6)
+# ──────────────────────────────────────────────────────────────────────────────
+def check_per_section_floor(
+    report_md: str,
+    per_section_min: int = 1,
+    mainline_titles: set[str] | None = None,
+    per_mainline_min: int = 4,
+) -> dict:
+    """v0.3.1 — per-section image floor + per-mainline image floor.
+
+    A5: every ## section must have >= per_section_min images (default 1, A8).
+    A6: mainline sections (caller passes the set) must have >= per_mainline_min
+        images (default 4 for "主线 4-6 张" methodology).
+
+    Methodology source: methodology/filter-three-principles.md "每板块至少 1 张图"
+    (A8 hard constraint) + "主线章节 4-6 张" guideline.
+
+    Args:
+        report_md: Full report.md text.
+        per_section_min: Floor for non-mainline sections.
+        mainline_titles: Set of titles considered "mainline". Match is exact
+            against the ## title line (e.g. "一、ACME YU7 GT：纽北最速 SUV").
+            Pass empty set to skip mainline check entirely.
+        per_mainline_min: Floor for mainline sections.
+
+    Returns:
+        dict with keys:
+            sections_below_floor: list[str]   # "title (n=X/min)" for non-mainline
+            mainline_below_floor: list[str]   # same for mainline
+            all_pass: bool
+    """
+    mainline_titles = mainline_titles or set()
+    sections_below: list[str] = []
+    mainline_below: list[str] = []
+
+    # split by leading ## (level-2 heading); skip preamble before first ##
+    chunks = re.split(r"(?m)^## ", report_md)
+    for chunk in chunks[1:]:
+        lines = chunk.splitlines()
+        if not lines:
+            continue
+        title_line = lines[0].strip()
+        if not title_line:
+            continue
+        # Skip exempt sections (consistent with check_coverage)
+        EXEMPT = ("信源说明", "整体概要", "📌")
+        if any(k in title_line for k in EXEMPT):
+            continue
+        # Only enforce on sections with chinese numerals (## 一、/ 二、/ ...)
+        if not re.match(r"^[一二三四五六七八九十]+、", title_line):
+            continue
+
+        body = "\n".join(lines[1:])
+        # Count image references; tolerate leading whitespace before ![
+        n_images = len(re.findall(r"(?m)^\s*!\[", body))
+
+        is_mainline = title_line in mainline_titles
+        if is_mainline:
+            if n_images < per_mainline_min:
+                mainline_below.append(f"{title_line} (n={n_images}/{per_mainline_min})")
+        else:
+            if n_images < per_section_min:
+                sections_below.append(f"{title_line} (n={n_images}/{per_section_min})")
+
+    return {
+        "sections_below_floor": sections_below,
+        "mainline_below_floor": mainline_below,
+        "all_pass": not sections_below and not mainline_below,
+    }
+
+
+def detect_mainline_titles(state: State, report_md: str, top_n: int = 2) -> set[str]:
+    """v0.3.1 — heuristic: mainline = top-N most-mentioned titles in transcript.
+
+    Reads ## titles from report_md; for each title, counts occurrences of the
+    first 2-6 char keyword (after the chinese numeral prefix) in the
+    transcript. Returns the top-N as the mainline set.
+
+    Returns empty set if transcript is missing — callers should treat that
+    as "skip mainline check" rather than "0 mainline floors fail".
+    """
+    transcript = ""
+    if state.video and state.video.transcript:
+        transcript = state.video.transcript
+    if not transcript:
+        return set()
+
+    titles = re.findall(r"(?m)^## (.+)$", report_md)
+    if not titles:
+        return set()
+
+    scored: list[tuple[str, int]] = []
+    for t in titles:
+        # strip chinese numeral prefix (一、二、…) and trailing description
+        norm = re.sub(r"^[一二三四五六七八九十]+、", "", t)
+        # take first keyword chunk (before colon / space / dash)
+        kw = re.split(r"[：—\- ]", norm, maxsplit=1)[0]
+        kw = kw.strip()[:6]
+        if len(kw) < 2:
+            continue
+        scored.append((t, transcript.count(kw)))
+    scored.sort(key=lambda x: x[1], reverse=True)
+    return {t for t, _ in scored[:top_n]}
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -645,6 +752,37 @@ def run(state: State, cfg: Config) -> State:
         console.print(f"  [5.5.1] coverage: [red]✗ missing in {len(cov['missing'])} sections[/]")
         for m in cov["missing"]:
             console.print(f"          - {m}")
+
+    # 5.5.1b per-section / per-mainline floor (v0.3.1 A5/A6, HARD GATE → stage 3 retry)
+    mainline_titles = detect_mainline_titles(state, report_md)
+    psec = check_per_section_floor(
+        report_md,
+        per_section_min=M.EXTRACT_PER_SECTION_MIN,
+        mainline_titles=mainline_titles,
+        per_mainline_min=M.EXTRACT_PER_MAINLINE_MIN,
+    )
+    state.per_section_floor_passed = psec["all_pass"]
+    if psec["all_pass"]:
+        if mainline_titles:
+            console.print(
+                f"  [5.5.1b] per-section floor: ✓ all sections meet floor "
+                f"(mainline detected: {len(mainline_titles)})"
+            )
+        else:
+            console.print(
+                "  [5.5.1b] per-section floor: ✓ all sections meet floor "
+                "(no transcript → mainline check skipped)"
+            )
+    else:
+        console.print(
+            f"  [5.5.1b] per-section floor: [red]✗ "
+            f"{len(psec['sections_below_floor'])} below {M.EXTRACT_PER_SECTION_MIN} / "
+            f"{len(psec['mainline_below_floor'])} mainline below {M.EXTRACT_PER_MAINLINE_MIN}[/]"
+        )
+        for s in psec["sections_below_floor"][:5]:
+            console.print(f"          - {s}")
+        for s in psec["mainline_below_floor"][:5]:
+            console.print(f"          - mainline: {s}")
 
     # 5.5.3 — anti-AI lint (HARD GATE: L1 errors trigger retry)
     lint = lint_report(report_md)

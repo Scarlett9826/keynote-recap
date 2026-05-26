@@ -204,13 +204,18 @@ def _collect_extract_failures(state: State) -> list[str]:
     issues: list[str] = []
     if not state.image_mix_passed:
         issues.append(
-            "5.5.6 image mix: total frames < 25 or live ratio < 70% "
+            "5.5.6 image mix: total frames < 35 or live ratio < 50% "
             "(too many marketing renders / inserts vs. live keynote frames)"
         )
     if not state.topic_coverage_passed:
         issues.append(
             "5.5.7 topic coverage: a high-frequency topic in the transcript "
             "has zero associated frames (vision LLM was too aggressive)"
+        )
+    if not state.per_section_floor_passed:
+        issues.append(
+            "5.5.1b per-section floor: a chapter has 0 images, OR a mainline "
+            "chapter has < 4 images (frame distribution uneven; retry stage 3)"
         )
     return issues
 

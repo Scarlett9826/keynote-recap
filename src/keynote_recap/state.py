@@ -130,6 +130,7 @@ class State(BaseModel):
     bucket_placement_passed: bool = True  # 5.5.4b (M6 D1): images in correct chapter bucket
     image_mix_passed: bool = True         # 5.5.6 (M6 D2): live ratio + total floor
     topic_coverage_passed: bool = True    # 5.5.7 (M6 D4): high-freq topic coverage
+    per_section_floor_passed: bool = True # v0.3.1 (A5/A6): per-section/per-mainline image floor
     caption_verify_path: str = ""
     lint_report_path: str = ""
 

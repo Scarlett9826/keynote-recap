@@ -2693,3 +2693,47 @@ def test_v031_per_section_floor_collect_failure_in_extract_failures():
     s.per_section_floor_passed = False
     fails = _collect_extract_failures(s)
     assert any("per-section" in f.lower() or "5.5.1b" in f for f in fails)
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# v0.3.1 Task 4 — caption verify wrong triggers extract retry (B1/B2)
+# ──────────────────────────────────────────────────────────────────────────────
+def test_v031_caption_wrong_triggers_extract_retry():
+    """v0.3.1 B2: caption verify wrong > tolerance → enters extract_failures."""
+    from keynote_recap.pipeline import _collect_extract_failures
+    from keynote_recap.state import State
+    s = State(url="x", output_dir="/tmp/x")
+    s.image_mix_passed = True
+    s.topic_coverage_passed = True
+    s.per_section_floor_passed = True
+    s.caption_verify_wrong_count = 2  # > EXTRACT_CAPTION_VERIFY_WRONG_MAX (1)
+    fails = _collect_extract_failures(s)
+    assert any("caption" in f.lower() for f in fails), \
+        f"expected caption failure in {fails}"
+
+
+def test_v031_caption_wrong_below_threshold_no_retry():
+    """v0.3.1 B2: 1 wrong is at tolerance → no retry trigger."""
+    from keynote_recap.pipeline import _collect_extract_failures
+    from keynote_recap.state import State
+    s = State(url="x", output_dir="/tmp/x")
+    s.image_mix_passed = True
+    s.topic_coverage_passed = True
+    s.per_section_floor_passed = True
+    s.caption_verify_wrong_count = 1  # at tolerance, no retry
+    fails = _collect_extract_failures(s)
+    assert not any("caption" in f.lower() for f in fails), \
+        f"unexpected caption failure (count=1 should be tolerated): {fails}"
+
+
+def test_v031_caption_zero_wrong_no_retry():
+    """v0.3.1 B2: 0 wrong → no retry."""
+    from keynote_recap.pipeline import _collect_extract_failures
+    from keynote_recap.state import State
+    s = State(url="x", output_dir="/tmp/x")
+    s.image_mix_passed = True
+    s.topic_coverage_passed = True
+    s.per_section_floor_passed = True
+    s.caption_verify_wrong_count = 0
+    fails = _collect_extract_failures(s)
+    assert not any("caption" in f.lower() for f in fails)

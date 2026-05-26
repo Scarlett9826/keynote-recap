@@ -217,6 +217,13 @@ def _collect_extract_failures(state: State) -> list[str]:
             "5.5.1b per-section floor: a chapter has 0 images, OR a mainline "
             "chapter has < 4 images (frame distribution uneven; retry stage 3)"
         )
+    if state.caption_verify_wrong_count > M.EXTRACT_CAPTION_VERIFY_WRONG_MAX:
+        issues.append(
+            f"5.5.2 caption verify: {state.caption_verify_wrong_count} wrong "
+            f"captions (> tolerance {M.EXTRACT_CAPTION_VERIFY_WRONG_MAX}); "
+            f"vision LLM misidentified frames; retry stage 3 with stricter "
+            f"caption-fidelity directive"
+        )
     return issues
 
 

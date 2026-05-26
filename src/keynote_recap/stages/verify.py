@@ -910,6 +910,7 @@ def run(state: State, cfg: Config) -> State:
     cap = verify_captions(state, cfg, client)
     n_verifications = len(cap.get("verifications", []))
     n_wrong = sum(1 for v in cap.get("verifications", []) if v.get("match_status") == "wrong")
+    state.caption_verify_wrong_count = n_wrong  # v0.3.1 B2: feeds retry orchestration
     console.print(f"  [5.5.2] caption verify (sample {n_verifications}): "
                   f"{'✓' if n_wrong == 0 else f'[red]✗ {n_wrong} wrong[/]'}")
 

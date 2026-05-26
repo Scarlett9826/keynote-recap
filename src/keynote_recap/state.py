@@ -131,6 +131,7 @@ class State(BaseModel):
     image_mix_passed: bool = True         # 5.5.6 (M6 D2): live ratio + total floor
     topic_coverage_passed: bool = True    # 5.5.7 (M6 D4): high-freq topic coverage
     per_section_floor_passed: bool = True # v0.3.1 (A5/A6): per-section/per-mainline image floor
+    caption_verify_wrong_count: int = 0   # v0.3.1 (B2): 5.5.2 sample-10 wrong caption count
     caption_verify_path: str = ""
     lint_report_path: str = ""
 

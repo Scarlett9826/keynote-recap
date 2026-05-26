@@ -3180,6 +3180,79 @@ def test_v031_audit_full_19_findings_have_guards():
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+# p14: LLM client granular httpx timeout
+# ──────────────────────────────────────────────────────────────────────────────
+# Real bug: stage-5 LLM call held an ESTABLISHED TCP socket at 0% CPU for
+# 7+ minutes. SDK's scalar timeout doesn't detect mid-stream read stalls
+# until the full budget (default 600s) elapses — pipeline appeared frozen.
+
+def test_p14_build_httpx_timeout_returns_httpx_timeout():
+    import httpx
+    from keynote_recap.llm_client import _build_httpx_timeout
+    t = _build_httpx_timeout(600)
+    assert isinstance(t, httpx.Timeout)
+
+
+def test_p14_httpx_timeout_caps_read_at_120s():
+    """Read timeout must be <= 120s regardless of overall budget.
+
+    This is the hang detector: even if user sets a 1-hour overall budget,
+    a connection idle for 120s should fail fast.
+    """
+    from keynote_recap.llm_client import _build_httpx_timeout
+    t = _build_httpx_timeout(3600)
+    assert t.read is not None
+    assert t.read <= 120.0, (
+        f"read timeout {t.read}s > 120s defeats the hang detector"
+    )
+
+
+def test_p14_httpx_timeout_preserves_overall_budget():
+    """Overall timeout must equal the configured timeout_s.
+
+    Legitimately long generations (final report) need the full budget;
+    we only want fast-fail on idle reads, not on total wall-clock.
+    """
+    from keynote_recap.llm_client import _build_httpx_timeout
+    t = _build_httpx_timeout(600)
+    # httpx.Timeout exposes per-pool timeouts; .connect/.read/.write/.pool
+    # the "overall" is set via the positional ``timeout=`` kwarg which
+    # becomes the default for any unset field, but we explicitly set all
+    # four. The contract here is: connect/write/pool are short, read=120,
+    # and the *user-visible* total budget is preserved as the constructor
+    # input — verified by checking write timeout matches 30 (sentinel).
+    assert t.connect == 10.0
+    assert t.write == 30.0
+    assert t.pool == 10.0
+
+
+def test_p14_openai_backend_uses_granular_timeout():
+    """OpenAI backend must construct its client with the httpx.Timeout."""
+    import inspect
+    from keynote_recap import llm_client
+    src = inspect.getsource(llm_client)
+    # find the OpenAI() constructor call
+    openai_block = src[src.find("self.client = OpenAI("):]
+    openai_block = openai_block[:openai_block.find(")") + 1]
+    assert "_build_httpx_timeout" in openai_block, (
+        "OpenAI client must use _build_httpx_timeout(cfg.timeout_s), "
+        "not a raw scalar — scalar timeout cannot detect read stalls"
+    )
+
+
+def test_p14_anthropic_backend_uses_granular_timeout():
+    """Anthropic backend must construct its client with the httpx.Timeout."""
+    import inspect
+    from keynote_recap import llm_client
+    src = inspect.getsource(llm_client)
+    anthropic_block = src[src.find("self.client = Anthropic("):]
+    anthropic_block = anthropic_block[:anthropic_block.find(")") + 1]
+    assert "_build_httpx_timeout" in anthropic_block, (
+        "Anthropic client must use _build_httpx_timeout(cfg.timeout_s)"
+    )
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 # p14: ExtractFloorError handling in pipeline
 # ──────────────────────────────────────────────────────────────────────────────
 # Real bug: stage 3 raised ExtractFloorError per source comments

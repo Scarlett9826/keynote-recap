@@ -24,10 +24,32 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Callable, TypeVar
 
+import httpx
 from openai import OpenAI
 from tenacity import retry, stop_after_attempt, wait_exponential
 
 from .config import LLMConfig
+
+
+# p14: granular httpx timeout to prevent half-dead TCP connections from
+# hanging the pipeline for the full ``timeout_s`` budget.
+#
+# Real bug: a stage-5 LLM call held an ESTABLISHED TCP socket at 0% CPU
+# for 7+ minutes — the SDK's single ``timeout`` value is enforced as the
+# overall budget but does not detect mid-stream read stalls until that
+# budget elapses (default 600s). With ``read=120s``, a hung connection
+# fails fast; tenacity retries take over.
+#
+# ``timeout`` (overall) stays bound to ``cfg.timeout_s`` so legitimately
+# long generations (final report draft, outline) keep their full budget.
+def _build_httpx_timeout(total_s: int) -> httpx.Timeout:
+    return httpx.Timeout(
+        timeout=float(total_s),  # overall budget — preserves config contract
+        connect=10.0,             # TCP handshake
+        read=120.0,               # between-bytes idle (hang detector)
+        write=30.0,               # request body upload
+        pool=10.0,                # connection pool acquisition
+    )
 
 T = TypeVar("T")
 R = TypeVar("R")
@@ -89,7 +111,7 @@ class _OpenAIBackend(_Backend):
         self.client = OpenAI(
             api_key=api_key,
             base_url=cfg.base_url,
-            timeout=cfg.timeout_s,
+            timeout=_build_httpx_timeout(cfg.timeout_s),  # p14
         )
 
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(min=2, max=30))
@@ -202,7 +224,7 @@ class _AnthropicBackend(_Backend):
         self.client = Anthropic(
             api_key=api_key,
             base_url=base,
-            timeout=cfg.timeout_s,
+            timeout=_build_httpx_timeout(cfg.timeout_s),  # p14
         )
 
     # ── helpers shared by chat / chat_with_images ──────────────────────

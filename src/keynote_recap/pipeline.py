@@ -276,55 +276,6 @@ def run_pipeline(
 
         try:
             state = runner(state, config)
-        except extract.ExtractFloorError as e:
-            # v0.3.1 follow-up: ExtractFloorError raised by stage 3's own
-            # hard floor (count / live_ratio) was previously uncaught — the
-            # outer Exception handler turned it into an immediate return,
-            # contradicting the CHANGELOG's "triggers extract retry" promise.
-            # Catch it here on stage 3 only, and retry once with the abort
-            # message fed in as a [RETRY GUIDANCE] directive. Same pattern as
-            # the stage-5.5-collected failure list.
-            if num == 3.0 and state.extract_retry_count == 0:
-                console.print(
-                    f"[bold yellow]⚠ Stage 3 hard floor tripped:[/] {e}\n"
-                    "[bold yellow]  → retrying stage 3 once with directive prompt.[/]\n"
-                )
-                state.extract_retry_count = 1
-                state.save()
-                try:
-                    state = extract.run(state, config, retry_context=[str(e)])
-                except extract.ExtractFloorError as e2:
-                    console.print(
-                        f"[bold red]Stage 3 retry still failed:[/] {e2}"
-                    )
-                    if num not in state.stages_skipped:
-                        state.stages_skipped.append(num)
-                    state.stages_skip_reasons["3"] = f"ExtractFloorError: {e2}"
-                    state.save()
-                    if debug:
-                        raise
-                    return state
-                except Exception as e2:
-                    console.print(
-                        f"[bold red]Stage 3 retry failed:[/] {e2}"
-                    )
-                    if num not in state.stages_skipped:
-                        state.stages_skipped.append(num)
-                    state.stages_skip_reasons["3"] = f"{type(e2).__name__}: {e2}"
-                    state.save()
-                    if debug:
-                        raise
-                    return state
-                # retry succeeded — fall through to "stage completed" path below
-            else:
-                console.print(f"[bold red]Stage {num} ({name}) failed:[/] {e}")
-                if num not in state.stages_skipped:
-                    state.stages_skipped.append(num)
-                state.stages_skip_reasons["3"] = f"ExtractFloorError: {e}"
-                state.save()
-                if debug:
-                    raise
-                return state
         except Exception as e:
             console.print(f"[bold red]Stage {num} ({name}) failed:[/] {e}")
             # v0.2.4 (M9.4): record this stage as skipped so frontmatter +

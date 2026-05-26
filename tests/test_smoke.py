@@ -2802,6 +2802,5 @@ def test_v031_section_fit_unchanged_when_no_subsection():
     # caption 词没出现在 ## 标题（只有 "A 章节"），但只有 1 张图 + 内容相关；
     # 旧实现可能误报，新实现因 body_hits/subsection 也参与，应不报
     # （这个测试验证不会因改动引入新的 false positive）
-    a_mm = [m for m in r.get("mismatches", []) if m.get("filename") == "a.jpg"]
     # 至少不应该报错；具体是否 mismatch 取决于既有 heuristic
     assert isinstance(r.get("mismatches"), list)

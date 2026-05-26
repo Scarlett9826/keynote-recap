@@ -3177,3 +3177,73 @@ def test_v031_audit_full_19_findings_have_guards():
     assert len(audit_tests) >= 19, (
         f"expected >= 19 audit tests, got {len(audit_tests)}: {audit_tests}"
     )
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# p14: ExtractFloorError handling in pipeline
+# ──────────────────────────────────────────────────────────────────────────────
+# Real bug: stage 3 raised ExtractFloorError per source comments
+# ("caught by pipeline retry orchestration"), but pipeline had no actual
+# `except ExtractFloorError` — the error escaped to top-level and crashed
+# the whole `recap-and-verify` command.
+
+def test_p14_extract_floor_error_is_imported_in_pipeline():
+    """Pipeline must import ExtractFloorError to catch it specifically."""
+    import keynote_recap.pipeline as P
+    assert hasattr(P, "ExtractFloorError"), (
+        "pipeline.py must import ExtractFloorError so the orchestrator "
+        "can catch hard-floor breaches separately from generic exceptions"
+    )
+
+
+def test_p14_extract_floor_error_handler_exists_in_pipeline_source():
+    """Pipeline source must explicitly catch ExtractFloorError."""
+    import keynote_recap.pipeline as P
+    src = Path(P.__file__).read_text()
+    assert "except ExtractFloorError" in src, (
+        "pipeline.py must contain `except ExtractFloorError` so the "
+        "documented retry contract is honoured (was missing pre-p14)"
+    )
+
+
+def test_p14_extract_floor_handler_uses_retry_context():
+    """The ExtractFloorError handler must invoke runner with retry_context.
+
+    This is what makes the retry meaningful: passing the failure details
+    back into stage 3's prompt so it can target the breach.
+    """
+    import keynote_recap.pipeline as P
+    src = Path(P.__file__).read_text()
+    # find the except block
+    handler_start = src.find("except ExtractFloorError")
+    assert handler_start >= 0
+    # next 30 lines should contain the retry runner call with retry_context
+    handler_block = src[handler_start:handler_start + 2000]
+    assert "retry_context=" in handler_block, (
+        "ExtractFloorError handler must call runner(...) with retry_context "
+        "kwarg so stage 3 sees the prior failure details"
+    )
+
+
+def test_p14_extract_floor_handler_marks_state_on_double_failure():
+    """If retry also fails, set image_mix_passed=False so render banner shows."""
+    import keynote_recap.pipeline as P
+    src = Path(P.__file__).read_text()
+    handler_start = src.find("except ExtractFloorError")
+    handler_block = src[handler_start:handler_start + 2000]
+    assert "image_mix_passed = False" in handler_block, (
+        "On double floor breach, must set state.image_mix_passed=False so "
+        "the final report carries a red banner instead of crashing silently"
+    )
+
+
+def test_p14_extract_floor_handler_only_runs_once():
+    """Guard against infinite retry: only retry when extract_retry_count == 0."""
+    import keynote_recap.pipeline as P
+    src = Path(P.__file__).read_text()
+    handler_start = src.find("except ExtractFloorError")
+    handler_block = src[handler_start:handler_start + 2000]
+    assert "extract_retry_count" in handler_block, (
+        "ExtractFloorError handler must check state.extract_retry_count to "
+        "prevent infinite retry loops if the floor keeps failing"
+    )

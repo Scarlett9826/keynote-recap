@@ -24,6 +24,7 @@ from .config import Config
 from .cost_tracker import format_summary
 from .preflight import ModelTier, check_model_capability
 from .stages import download, draft, extract, render, research, segment, verify
+from .stages.extract import ExtractFloorError
 from .state import State
 
 console = Console()
@@ -276,6 +277,38 @@ def run_pipeline(
 
         try:
             state = runner(state, config)
+        except ExtractFloorError as e:
+            # p14: stage-3 hard-floor breach. Source comments claim "caught by
+            # pipeline retry orchestration" but pre-p14 nothing actually caught
+            # this — it crashed the whole pipeline. Honour the contract: retry
+            # stage 3 once with floor breach injected as retry_context, then if
+            # it still fails, mark image_mix_passed=False and stop (don't
+            # crash; downstream stages can't proceed without selected_frames).
+            if name != "extract" or state.extract_retry_count > 0:
+                # Not extract, or already retried — fall through to generic.
+                raise
+            console.print(
+                f"\n[bold yellow]⚠ Stage 3 floor breach:[/] {e}\n"
+                f"   Retrying stage 3 once with breach details injected.\n"
+            )
+            state.extract_retry_count = 1
+            state.save()
+            try:
+                state = runner(state, config, retry_context=[str(e)])
+            except ExtractFloorError as e2:
+                console.print(
+                    f"[bold red]Stage 3 retry also failed:[/] {e2}\n"
+                    f"   Marking image_mix_passed=False; pipeline stops here "
+                    f"(downstream stages need selected_frames)."
+                )
+                state.image_mix_passed = False
+                if num not in state.stages_skipped:
+                    state.stages_skipped.append(num)
+                state.stages_skip_reasons["3"] = f"ExtractFloorError: {e2}"
+                state.save()
+                if debug:
+                    raise
+                return state
         except Exception as e:
             console.print(f"[bold red]Stage {num} ({name}) failed:[/] {e}")
             # v0.2.4 (M9.4): record this stage as skipped so frontmatter +

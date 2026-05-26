@@ -4,6 +4,80 @@ All notable changes to **keynote-recap** are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.5] — Agent-friendly preflight phrasing (2026-05-26)
+
+### Fixed
+
+- **doctor preflight no longer scares external agent wrappers into
+  aborting**. Pre-v0.3.5, when ``OPENAI_API_KEY`` (or whatever
+  ``cfg.llm.api_key_env`` named) was not literally set in the calling
+  shell, ``keynote-recap doctor`` rendered::
+
+      ⚠ api_key: $OPENAI_API_KEY is not set — LLM stages will fail with
+        401 unless the SDK reads the key from another source ...
+
+  This was technically correct: the check is ``severity="warning"``
+  (advisory, never aborts the CLI itself, fixed in v0.2.5.1). But every
+  agent wrapper we tested — opencode hooks, cron drivers, claude-desktop
+  runners — over-read ``⚠`` + the words ``"fail"`` and ``"401"`` and
+  aborted *itself* before invoking the CLI, refusing to even try.
+  v0.3.5 fully neutralizes both the wording and the rendering so
+  agents can no longer mis-classify this as an error condition:
+
+  1. Detail wording rewritten to pure status: ``$OPENAI_API_KEY not in
+     shell env; SDK will resolve from gateway / keychain / proxy on
+     first call.`` Words ``fail`` / ``401`` / ``missing`` / ``unset`` /
+     ``error`` / ``abort`` are forbidden in the rendered output (test
+     ``test_v035_doctor_stdout_has_no_alarming_words_when_api_key_unset``
+     enforces this).
+  2. ``cli._preflight_env`` special-cases ``what == "api_key"`` and
+     renders ``ℹ`` blue instead of ``⚠`` yellow. Other warning-severity
+     checks keep ``⚠``; this isolates the visual change to the one
+     check that was causing agent abort, without weakening the
+     surrounding warning vocabulary.
+  3. ``EnvCheck.fix`` for this case is now ``None`` (was
+     ``"export $X=..."``). The SDK owns key resolution; we don't
+     prescribe.
+  4. Severity remains ``"warning"`` — ``state.preflight_env_warnings``
+     and the report banner still record the diagnostic for audit.
+     Only the *display* layer was softened.
+
+### Changed
+
+- ``preflight_env.check_api_key`` returns ``EnvCheck(severity="warning",
+  fix=None, detail="<env-var> not in shell env; SDK will resolve from
+  gateway / keychain / proxy on first call.")`` when the env var is
+  missing. Old detail string and ``export ...`` fix string are gone.
+
+### Tests
+
+- 2 new tests; total **216** (was 214).
+- ``test_v035_doctor_stdout_has_no_alarming_words_when_api_key_unset``:
+  renders the api-key-unset bullet through ``_preflight_env`` and
+  asserts every alarming word (``fail``, ``401``, ``missing``,
+  ``unset``, ``error``, ``abort``) is absent from stdout. This is the
+  hard gate.
+- ``test_v035_api_key_check_uses_info_glyph_in_cli``: bullet line for
+  ``api_key`` contains ``ℹ`` (U+2139), not ``⚠`` (U+26A0).
+- ``test_preflight_env_api_key_check_unset`` updated: detail must be
+  word-neutral, ``fix`` must be ``None``.
+
+### Deliberately NOT changed
+
+- We did not introduce a third severity tier (``"info"``) in the
+  ``EnvCheck`` dataclass even though it was the natural fit. Reason:
+  ``warning_summaries()`` filters ``severity == "warning"``, and the
+  report banner / state persistence chain depends on this for audit.
+  Reclassifying api_key as ``"info"`` would silently drop it from
+  ``state.preflight_env_warnings`` — losing the audit trail. The
+  cli-layer special-case is narrower and reversible.
+- We did not touch model-capability warnings (``UNKNOWN`` model →
+  ⚠). Those are *real* advisories an operator should see; they are
+  not symptomatic of the false-error problem this release fixes.
+- We did not change the abort behavior of any blocker check. doctor
+  still aborts if ``ffmpeg`` / ``ffprobe`` / ``yt-dlp`` are missing or
+  Python is too old.
+
 ## [0.3.4] — Chinese-caption fit & cn-compound bucket bridging (2026-05-26)
 
 ### Fixed

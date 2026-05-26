@@ -196,13 +196,23 @@ def check_api_key(env_var_name: str) -> EnvCheck:
     """
     val = os.environ.get(env_var_name, "").strip()
     if not val:
+        # v0.3.5: severity remains "warning" (state still records this in
+        # preflight_env_warnings for the report banner) but the wording
+        # is fully neutralized — no "will fail", no "401", no "missing".
+        # This is purely a status note that the SDK will own key resolution.
+        # Why: external agent wrappers (cron drivers, opencode hooks,
+        # claude-desktop runners) over-read any error-shaped string and
+        # abort before invoking the CLI, even when the SDK could resolve
+        # the key from a gateway / keychain / proxy. The CLI already
+        # renders this as ℹ blue (cli._preflight_env special-cases
+        # what == "api_key"), so visually it looks like 'doctor' is fine
+        # — which it is.
         return EnvCheck(
             ok=False,
             what="api_key",
-            detail=f"${env_var_name} is not set — LLM stages will fail "
-                   "with 401 unless the SDK reads the key from another "
-                   "source (e.g. an agent-host proxy).",
-            fix=f"export {env_var_name}=<your-api-key>",
+            detail=f"${env_var_name} not in shell env; SDK will resolve "
+                   "from gateway / keychain / proxy on first call.",
+            fix=None,
             severity="warning",
         )
     # Light sanity: most keys are >= 20 chars

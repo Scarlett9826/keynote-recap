@@ -763,6 +763,11 @@ def test_preflight_env_api_key_check_unset(monkeypatch):
     key is actually wrong" is the first LLM call (401 with provider
     message). v0.2.5 silently upgraded this to a blocker (un-declared
     BREAKING) which broke those workflows.
+
+    v0.3.5 update: detail wording is fully neutralized (no "fail" /
+    "401" / "missing") to stop external agent wrappers from over-reading
+    the message and aborting. fix is now None (we don't tell the user
+    what to do — we trust the SDK's resolution chain).
     """
     from keynote_recap.preflight_env import check_api_key
 
@@ -771,7 +776,14 @@ def test_preflight_env_api_key_check_unset(monkeypatch):
     assert r.ok is False
     assert r.severity == "warning"  # v0.2.5.1 — was "blocker" in v0.2.5
     assert "FAKE_KEY" in r.detail
-    assert "export FAKE_KEY=" in r.fix
+    # v0.3.5: detail must not contain alarming words that fool agents.
+    lower = r.detail.lower()
+    for forbidden in ("fail", "401", "error", "missing", "unset"):
+        assert forbidden not in lower, (
+            f"v0.3.5: detail must be neutral; found '{forbidden}' in: {r.detail!r}"
+        )
+    # v0.3.5: fix is None — we no longer prescribe `export X=...`.
+    assert r.fix is None
 
 
 def test_v0251_preflight_env_does_not_abort_when_only_api_key_missing(
@@ -3733,3 +3745,67 @@ def test_v034_p3_mismatch_dict_carries_trigram_diagnostics():
     m = result["mismatches"][0]
     assert "trigram_hits" in m
     assert "body_trigram_hits" in m
+
+
+# ─────────────────────────────────────────────────────────────────────
+# v0.3.5 — agent-friendly preflight phrasing
+# ─────────────────────────────────────────────────────────────────────
+
+
+def test_v035_doctor_stdout_has_no_alarming_words_when_api_key_unset(
+    tmp_path, monkeypatch, capsys
+):
+    """v0.3.5: when OPENAI_API_KEY is unset, `keynote-recap doctor`'s
+    rendered stdout must contain ZERO words that an external agent
+    wrapper could over-read as "the tool errored". This test is a hard
+    gate for the regression we keep hitting where opencode / cron
+    drivers / claude-desktop hooks see ⚠ + 'fail' + '401' and abort
+    before invoking the CLI.
+
+    Forbidden in stdout (case-insensitive): fail, 401, missing, unset,
+    error, abort.
+    """
+    from keynote_recap.cli import _preflight_env
+    from keynote_recap.config import load_config
+
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    cfg = load_config()
+    result = _preflight_env(cfg, tmp_path)
+    # Must not abort.
+    assert result is not None
+
+    captured = capsys.readouterr().out.lower()
+    for forbidden in ("fail", "401", "missing", "unset", "error", "abort"):
+        assert forbidden not in captured, (
+            f"v0.3.5 regression: doctor stdout contains '{forbidden}' "
+            f"when only api_key is unset. Full output:\n{captured}"
+        )
+    # And the warning is still recorded in state for the report banner.
+    assert any("api_key" in w for w in result)
+
+
+def test_v035_api_key_check_uses_info_glyph_in_cli(tmp_path, monkeypatch, capsys):
+    """v0.3.5: cli._preflight_env special-cases what == "api_key" and
+    renders ℹ blue instead of ⚠ yellow. Other warning-severity checks
+    keep ⚠. This isolates the visual fix to the one check that was
+    causing agent abort, without weakening other warnings.
+    """
+    from keynote_recap.cli import _preflight_env
+    from keynote_recap.config import load_config
+
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    cfg = load_config()
+    _preflight_env(cfg, tmp_path)
+    out = capsys.readouterr().out
+    # Filter to the rendered preflight bullet lines only — not test
+    # framework chrome. The bullet line format is:
+    #   "  <glyph> api_key: <detail>"
+    # so we look for the literal "api_key:" substring (with the colon).
+    api_key_lines = [ln for ln in out.splitlines() if "api_key:" in ln]
+    assert api_key_lines, (
+        f"expected at least one api_key bullet line in doctor output; got:\n{out}"
+    )
+    joined = "\n".join(api_key_lines)
+    # api_key bullet must use ℹ (U+2139), not ⚠ (U+26A0).
+    assert "\u2139" in joined, f"api_key line missing ℹ in:\n{joined}"
+    assert "\u26a0" not in joined, f"api_key line still has ⚠ in:\n{joined}"

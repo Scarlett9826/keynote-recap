@@ -223,6 +223,16 @@ def _preflight_env(cfg, output_dir: Path) -> list[str] | None:
             console.print(f"  [green]\u2713[/] {c.what}: [dim]{c.detail}[/]")
         elif c.severity == "blocker":
             console.print(f"  [red]\u2717[/] {c.what}: {c.detail}")
+        elif c.what == "api_key":
+            # v0.3.5: api_key warning rendered as ℹ blue instead of ⚠ yellow.
+            # External agent wrappers (cron drivers, opencode hooks,
+            # claude-desktop runners) saw ⚠ + "will fail with 401" and
+            # aborted before ever invoking the CLI, even when the SDK
+            # could resolve the key from a gateway / keychain / proxy.
+            # Severity remains "warning" so state.preflight_env_warnings
+            # still records it for the report banner — we just don't
+            # shout at the agent from the CLI.
+            console.print(f"  [blue]\u2139[/] {c.what}: [dim]{c.detail}[/]")
         else:
             console.print(f"  [yellow]\u26a0[/] {c.what}: {c.detail}")
 

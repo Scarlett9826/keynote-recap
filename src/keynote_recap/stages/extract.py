@@ -36,6 +36,18 @@ BATCH_SIZE = 10        # frames per vision call
 MAX_TRANSCRIPT_CHARS = 30000  # truncate transcript for batch prompts
 
 
+class ExtractFloorError(RuntimeError):
+    """Stage 3 produced fewer/worse frames than methodology hard floors require.
+
+    Raising this is how stage 3 signals 'retry me with a strengthened prompt'.
+    Pipeline retry orchestration (v0.2.5 skeleton, v0.3.1 wiring) catches it
+    and routes to the extract retry path with last-failures as prompt context.
+
+    Distinct from generic RuntimeError so retry orchestration can tell apart
+    'methodology floor breach' (retryable) from 'environmental error' (not).
+    """
+
+
 def run(state: State, cfg: Config) -> State:
     """Execute stage 3."""
     if not state.candidate_frames:
@@ -149,16 +161,33 @@ def run(state: State, cfg: Config) -> State:
             _merge_batch_result(r["data"], batch, selected, rejected)
             progress.advance(task, advance=len(batch))
 
+    # ─── v0.3.1 A4: drop low-info-density frames before rescue/cap ───
+    # Vision LLM sometimes self-assigns info_density < 0.70 but still puts
+    # the frame in selected (prompt-only soft constraint). Hard-filter here.
+    selected, dropped_lowd = _enforce_density_floor(
+        selected, threshold=M.EXTRACT_INFO_DENSITY_MIN
+    )
+    if dropped_lowd:
+        console.print(
+            f"  [yellow]density filter: dropped {len(dropped_lowd)} frames "
+            f"(info_density < {M.EXTRACT_INFO_DENSITY_MIN})[/]"
+        )
+
     # ─── Floor enforcement: rescue pass if LLM was too conservative ───
     # M4 fix: previously we only capped to max; if LLM rejected too aggressively
     # we'd silently produce a 12-image report. Now if we're under the floor,
     # we promote rejected frames back from highest scorer score.
+    #
+    # v0.3.1: rescue frames now use info_density = M.EXTRACT_INFO_DENSITY_MIN
+    # (not 0.6) so they survive the density filter above; if scorer score is
+    # decent, treat them as floor-quality candidates. Truly bad rescue
+    # candidates remain rejected by the post-rescue _check_extract_floors gate.
     if len(selected) < M.EXTRACT_FINAL_COUNT_MIN:
         gap = M.EXTRACT_FINAL_COUNT_MIN - len(selected)
         console.print(
             f"  [yellow]Selected only {len(selected)} (floor: "
             f"{M.EXTRACT_FINAL_COUNT_MIN}); promoting top {gap} "
-            f"rejected by scorer score[/]"
+            f"rescue candidates by scorer score[/]"
         )
         selected_names = {f.filename for f in selected}
         # Sort rejected by original scorer score (descending)
@@ -184,8 +213,8 @@ def run(state: State, cfg: Config) -> State:
                 caption=f"[补救入选] 来自 {format_duration(cand.timestamp_s)} "
                         f"附近的画面（演讲上下文：{cand.context_subtitle[:120]}）",
                 recommended_section="",
-                info_density=0.6,
-                relevance=0.6,
+                info_density=M.EXTRACT_INFO_DENSITY_MIN,
+                relevance=M.EXTRACT_INFO_DENSITY_MIN,
                 source="frame_extract_rescue",
             ))
             promoted += 1
@@ -202,6 +231,16 @@ def run(state: State, cfg: Config) -> State:
         selected = selected[: M.EXTRACT_FINAL_COUNT_MAX]
 
     selected.sort(key=lambda f: f.timestamp_s)
+
+    # ─── v0.3.1 A1/A3: hard floor gate (count + live ratio) ───
+    # Raises ExtractFloorError → caught by pipeline retry orchestration
+    # (which retries stage 3 with last-failures injected into the prompt).
+    # Do NOT silently ship a sub-floor selection.
+    _check_extract_floors(
+        selected,
+        count_min=M.EXTRACT_FINAL_COUNT_MIN,
+        live_ratio_min=M.EXTRACT_LIVE_RATIO_MIN,
+    )
 
     # Move selected frames to frames/ for the final report
     final_dir = output_dir / "frames"
@@ -446,3 +485,58 @@ def _merge_batch_result(
             "filename": item.get("filename", ""),
             "rejection_reason": item.get("rejection_reason", ""),
         })
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# v0.3.1 — image quality hard floor helpers (A1/A3/A4)
+# ──────────────────────────────────────────────────────────────────────────────
+def _enforce_density_floor(
+    frames: list[SelectedFrame],
+    threshold: float = M.EXTRACT_INFO_DENSITY_MIN,
+) -> tuple[list[SelectedFrame], list[SelectedFrame]]:
+    """v0.3.1 A4: drop frames whose info_density < threshold.
+
+    Returns (kept, dropped). Vision LLM occasionally self-marks frames
+    info_density < 0.70 but still keeps them in selected_frames; this
+    function turns that prompt-only soft constraint into a code filter.
+
+    Frames exactly at threshold are kept (>=).
+    """
+    kept = [f for f in frames if (f.info_density or 0.0) >= threshold]
+    dropped = [f for f in frames if (f.info_density or 0.0) < threshold]
+    return kept, dropped
+
+
+def _check_extract_floors(
+    selected: list[SelectedFrame],
+    count_min: int = M.EXTRACT_FINAL_COUNT_MIN,
+    live_ratio_min: float = M.EXTRACT_LIVE_RATIO_MIN,
+) -> None:
+    """v0.3.1 A1/A3: raise ExtractFloorError if hard floors fail.
+
+    Floors checked here (cheap / deterministic, run after dedupe + cap):
+      - total count >= count_min (default 35; methodology.EXTRACT_FINAL_COUNT_MIN)
+      - live ratio >= live_ratio_min (default 0.50)
+
+    Per-section / per-mainline checks live in verify (need report.md and
+    section structure; see check_per_section_floor).
+
+    Raising ExtractFloorError signals to pipeline retry orchestration that
+    stage 3 should be re-run with last-failures injected into the prompt.
+    """
+    n = len(selected)
+    if n < count_min:
+        raise ExtractFloorError(
+            f"selected_frames count {n} < {count_min} "
+            f"(EXTRACT_FINAL_COUNT_MIN). Vision LLM rejected too aggressively; "
+            f"retry will inject 'select more frames' directive."
+        )
+    n_live = sum(1 for f in selected if f.is_live)
+    ratio = n_live / n if n else 0.0
+    if ratio < live_ratio_min:
+        raise ExtractFloorError(
+            f"live ratio {ratio:.0%} < {live_ratio_min:.0%} "
+            f"({n_live}/{n} live frames). Too many marketing renders / "
+            f"insert clips vs. live keynote frames; retry will boost live "
+            f"frame priority in prompt."
+        )

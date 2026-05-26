@@ -2521,3 +2521,86 @@ def test_v031_methodology_constants():
     assert M.EXTRACT_PER_MAINLINE_MIN == 4  # E3: 主线 4-6 张
     assert M.EXTRACT_CAPTION_VERIFY_WRONG_MAX == 1  # B2: tolerance for vision LLM hiccup
     assert M.EXTRACT_INFO_DENSITY_MIN == 0.70
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# v0.3.1 Task 2 — stage 3 hard floors (A1/A3/A4)
+# ──────────────────────────────────────────────────────────────────────────────
+def _make_selected_frame(
+    name: str,
+    *,
+    info_density: float = 0.85,
+    is_live: bool = True,
+    relevance: float = 0.9,
+):
+    """Test helper: build SelectedFrame with sane defaults."""
+    from keynote_recap.state import SelectedFrame
+    return SelectedFrame(
+        filename=name,
+        timestamp_s=10.0,
+        category="data",
+        is_live=is_live,
+        caption="x" if is_live else "（插播官方渲染）x",
+        recommended_section="一",
+        info_density=info_density,
+        relevance=relevance,
+        source="frame_extract",
+    )
+
+
+def test_v031_extract_drops_low_density():
+    """v0.3.1 A4: stage 3 must drop frames with info_density < 0.70."""
+    from keynote_recap.stages.extract import _enforce_density_floor
+    frames = [
+        _make_selected_frame("a.jpg", info_density=0.85),
+        _make_selected_frame("b.jpg", info_density=0.55),
+        _make_selected_frame("c.jpg", info_density=0.70),  # exactly at floor → keep
+    ]
+    kept, dropped = _enforce_density_floor(frames, threshold=0.70)
+    assert {f.filename for f in kept} == {"a.jpg", "c.jpg"}
+    assert {f.filename for f in dropped} == {"b.jpg"}
+
+
+def test_v031_extract_aborts_below_count_floor():
+    """v0.3.1 A1: < count_min raises ExtractFloorError."""
+    from keynote_recap.stages.extract import (
+        ExtractFloorError,
+        _check_extract_floors,
+    )
+    too_few = [_make_selected_frame(f"f{i}.jpg") for i in range(20)]
+    try:
+        _check_extract_floors(too_few, count_min=35, live_ratio_min=0.50)
+    except ExtractFloorError as e:
+        assert "20" in str(e) and "35" in str(e)
+    else:
+        raise AssertionError("expected ExtractFloorError on count<min")
+
+
+def test_v031_extract_aborts_below_live_ratio():
+    """v0.3.1 A3: live ratio < 0.50 raises ExtractFloorError."""
+    from keynote_recap.stages.extract import (
+        ExtractFloorError,
+        _check_extract_floors,
+    )
+    # 35 张但只 10 张 live → 28.5% < 50%
+    frames = [
+        _make_selected_frame(f"f{i}.jpg", is_live=(i < 10))
+        for i in range(35)
+    ]
+    try:
+        _check_extract_floors(frames, count_min=35, live_ratio_min=0.50)
+    except ExtractFloorError as e:
+        assert "live" in str(e).lower()
+    else:
+        raise AssertionError("expected ExtractFloorError on low live ratio")
+
+
+def test_v031_extract_passes_when_floors_met():
+    """v0.3.1: 35 张 + 70% live + 全 density >= 0.70 → no exception."""
+    from keynote_recap.stages.extract import _check_extract_floors
+    frames = [
+        _make_selected_frame(f"f{i}.jpg", is_live=(i < 25))  # 25/35 = 71% live
+        for i in range(35)
+    ]
+    # 不抛异常 = 通过
+    _check_extract_floors(frames, count_min=35, live_ratio_min=0.50)

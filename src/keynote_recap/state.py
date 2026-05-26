@@ -47,7 +47,7 @@ class SelectedFrame(BaseModel):
     recommended_section: str            # which section it belongs to
     info_density: float                 # 0-1
     relevance: float                    # 0-1
-    source: Literal["frame_extract", "official"] = "frame_extract"
+    source: Literal["frame_extract", "frame_extract_rescue", "official"] = "frame_extract"
     # M6: is the frame from a live keynote scene (stage / speaker / PPT / live demo)
     # or an inserted official render / marketing clip? Used by 5.5.6 source-mix
     # check (live ratio must be >= 70% in strict tier).

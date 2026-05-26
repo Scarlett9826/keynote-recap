@@ -394,7 +394,7 @@ class LLMClient:
 
     @staticmethod
     def parse_json(text: str) -> Any:
-        """Robust JSON parsing — strips markdown fences if present, with json_repair fallback."""
+        """Robust JSON parsing — strips markdown fences if present."""
         t = text.strip()
         if t.startswith("```"):
             lines = t.split("\n")
@@ -403,15 +403,7 @@ class LLMClient:
             if lines and lines[-1].startswith("```"):
                 lines = lines[:-1]
             t = "\n".join(lines)
-        try:
-            return json.loads(t)
-        except json.JSONDecodeError:
-            try:
-                from json_repair import repair_json
-                repaired = repair_json(t)
-                return json.loads(repaired)
-            except Exception:
-                raise
+        return json.loads(t)
 
 
 # ──────────────────────────────────────────────────────────────────────────────

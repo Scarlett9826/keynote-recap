@@ -61,7 +61,7 @@ SEGMENT_CHUNK_FLOOR: int = 3
 # Empirically, < 35 frames on a 60-90min keynote leaves 6+ subsections
 # with 0 images (verified Xiaomi 2026-05-20 launch produced only 27 frames
 # with 6 chapters uncovered → triggered v0.3.1 hard-gate work).
-EXTRACT_FINAL_COUNT_MIN: int = 25
+EXTRACT_FINAL_COUNT_MIN: int = 35
 EXTRACT_FINAL_COUNT_MAX: int = 50
 
 # Three-principle thresholds. info_density / relevance below 0.7 produces

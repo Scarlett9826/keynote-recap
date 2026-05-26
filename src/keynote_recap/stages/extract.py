@@ -520,11 +520,17 @@ def _merge_batch_result(
         caption = item.get("caption", "")
         if not is_live and not caption.startswith("（插播官方渲染）"):
             caption = f"（插播官方渲染）{caption}"
+        # v0.3.1 D2: alt_short — short alt text (<= 25 chars). Truncate if LLM
+        # over-generates. Empty for legacy LLMs that ignore the new field;
+        # render falls back to caption when alt_short is empty.
+        alt_short_raw = item.get("alt_short", "") or ""
+        alt_short = alt_short_raw.strip()[:40]  # hard cap 40 chars defensive
         selected_out.append(SelectedFrame(
             filename=fname,
             timestamp_s=c.timestamp_s,
             category=item.get("category", "other"),
             caption=caption,
+            alt_short=alt_short,
             recommended_section=item.get("recommended_section", ""),
             info_density=float(item.get("info_density", 0.7)),
             relevance=float(item.get("relevance_to_section", 0.7)),

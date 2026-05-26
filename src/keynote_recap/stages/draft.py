@@ -601,9 +601,15 @@ def _format_buckets_for_prompt(
             continue
         lines.append(f"### {chapter}  （{len(frames)} 张候选，本章只能用这里的图）")
         for i, f in enumerate(frames, 1):
+            # v0.3.1 D2: prefer alt_short for the alt text in the suggested
+            # markdown reference (LLM frequently copy-pastes this template
+            # verbatim, so we want short readable alt). Fall back to first 60
+            # chars of caption for legacy frames where alt_short is empty.
+            alt = (getattr(f, "alt_short", "") or f.caption)[:60]
             lines.append(
                 f"  [{i}] `{f.filename}`  ({format_duration(f.timestamp_s)})\n"
-                f"      引用: ![{f.caption[:60]}](frames/{f.filename})\n"
+                f"      引用: ![{alt}](frames/{f.filename})\n"
+                f"      alt_short: {getattr(f, 'alt_short', '') or '(空，使用 caption 截断)'}\n"
                 f"      caption: {f.caption}"
             )
         lines.append("")

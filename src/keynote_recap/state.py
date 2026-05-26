@@ -44,6 +44,12 @@ class SelectedFrame(BaseModel):
     timestamp_s: float
     category: str                      # demo|product|data|architecture|partner_logos|other
     caption: str                        # full caption with context
+    # v0.3.1 D2: short alt text (≤ 25 chars Chinese / 35 chars ASCII) for
+    # screen readers, fallback hover, and concise image listings. Distinct
+    # from `caption` (which is the long descriptive form rendered next to
+    # the image in markdown). Populated by stage-3 vision LLM alongside
+    # caption; legacy frames default to empty (render falls back to caption).
+    alt_short: str = ""
     recommended_section: str            # which section it belongs to
     info_density: float                 # 0-1
     relevance: float                    # 0-1

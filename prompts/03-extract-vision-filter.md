@@ -98,6 +98,7 @@ ERROR_NO_VISION_CAPABILITY: 本任务需要多模态模型（claude-sonnet-4 / g
       "category": "demo|product|data|architecture|partner_logos|other",
       "is_live": true,
       "caption": "<完整 caption（必须中文，禁止英文）：是什么 + 讲什么 + 上下文。如果 is_live=false，caption 必须以「（插播官方渲染）」开头>",
+      "alt_short": "<≤25 字中文短 alt：仅图本身的实体名/数据/动作。例：『1.5匹挂机风量1000立方米』『发布会全场观众起立鼓掌』。禁止使用 caption 的整段内容；alt_short 用于截图列表/无障碍读屏，必须能独立识别这张图>",
       "recommended_section": "Agent 体系 / 模型层 / 基建 / ...",
       "info_density": 0.85,
       "relevance_to_section": 0.92,

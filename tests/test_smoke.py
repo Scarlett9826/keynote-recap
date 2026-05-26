@@ -2897,3 +2897,108 @@ def test_v031_render_synthesizes_red_banner_when_verify_skipped():
             "v0.3.1 C2: verify-skipped path must produce red banner, not silent"
         )
         assert "Quality gate did not run" in html or "未通过项目质量门" in html
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# v0.3.1 Task 7 — alt_short field + briefing-style + table-density (D1/D2/D3)
+# ──────────────────────────────────────────────────────────────────────────────
+def test_v031_selected_frame_has_alt_short_field():
+    """v0.3.1 D2: SelectedFrame has alt_short field defaulting to empty."""
+    from keynote_recap.state import SelectedFrame
+    f = SelectedFrame(
+        filename="x.jpg",
+        timestamp_s=0.0,
+        category="other",
+        caption="full caption",
+        recommended_section="",
+        info_density=0.7,
+        relevance=0.7,
+    )
+    assert hasattr(f, "alt_short")
+    assert f.alt_short == ""
+
+
+def test_v031_selected_frame_alt_short_round_trip():
+    """v0.3.1 D2: alt_short accepts and persists short alt text."""
+    from keynote_recap.state import SelectedFrame
+    f = SelectedFrame(
+        filename="x.jpg",
+        timestamp_s=0.0,
+        category="other",
+        caption="（插播官方渲染）武汉家电智能工厂磁悬浮装配线",
+        alt_short="武汉智能工厂装配线",
+        recommended_section="",
+        info_density=0.7,
+        relevance=0.7,
+    )
+    assert f.alt_short == "武汉智能工厂装配线"
+    assert len(f.alt_short) <= 25
+
+
+def test_v031_extract_prompt_schema_includes_alt_short():
+    """v0.3.1 D2: stage 3 vision prompt JSON schema asks for alt_short."""
+    from pathlib import Path
+    p = Path(__file__).resolve().parents[1] / "prompts" / "03-extract-vision-filter.md"
+    text = p.read_text()
+    assert "alt_short" in text, "prompts/03 must include alt_short field in schema"
+    assert "≤25" in text or "<=25" in text or "25 字" in text
+
+
+def test_v031_strict_prompt_includes_briefing_first_sentence():
+    """v0.3.1 D1: strict prompt has briefing-style first-sentence rule."""
+    from pathlib import Path
+    p = Path(__file__).resolve().parents[1] / "prompts" / "05-draft-write-strict.md"
+    text = p.read_text()
+    assert "简报体" in text or "首句" in text
+    assert "词典释义" in text  # forbidden mode
+    assert ("数字开打" in text) or ("时间开打" in text) or ("判断开打" in text)
+
+
+def test_v031_strict_prompt_includes_table_hard_constraint():
+    """v0.3.1 D3: strict prompt requires parallel info ≥ 3 items → table."""
+    from pathlib import Path
+    p = Path(__file__).resolve().parents[1] / "prompts" / "05-draft-write-strict.md"
+    text = p.read_text()
+    assert "并列" in text and "表格" in text
+    # spot-check the example table is present
+    assert "| 档位 |" in text or "| 价位 |" in text
+
+
+def test_v031_draft_bucket_lists_alt_short():
+    """v0.3.1 D2: per-chapter bucket text shown to draft LLM exposes alt_short
+    so the LLM can copy it into the rendered ![](frames/...) reference.
+    """
+    from keynote_recap.stages.draft import _format_buckets_for_prompt
+    from keynote_recap.state import SelectedFrame
+    f = SelectedFrame(
+        filename="frame_001.jpg",
+        timestamp_s=10.0,
+        category="data",
+        caption="（插播官方渲染）武汉家电智能工厂磁悬浮装配线",
+        alt_short="武汉智能工厂装配线",
+        recommended_section="八、ACME空调",
+        info_density=0.85,
+        relevance=0.9,
+    )
+    txt = _format_buckets_for_prompt([("八、ACME空调", [f])])
+    assert "alt_short" in txt
+    assert "武汉智能工厂装配线" in txt
+    # rendered ![](frames/...) reference uses alt_short, not full caption
+    assert "![武汉智能工厂装配线](frames/frame_001.jpg)" in txt
+
+
+def test_v031_draft_bucket_falls_back_to_caption_when_no_alt_short():
+    """v0.3.1 D2: legacy frames (alt_short=='') fall back to caption[:60]."""
+    from keynote_recap.stages.draft import _format_buckets_for_prompt
+    from keynote_recap.state import SelectedFrame
+    f = SelectedFrame(
+        filename="frame_002.jpg",
+        timestamp_s=20.0,
+        category="data",
+        caption="完整的图说明文字描述了具体内容",
+        recommended_section="一、demo",
+        info_density=0.85,
+        relevance=0.9,
+    )
+    txt = _format_buckets_for_prompt([("一、demo", [f])])
+    assert "完整的图说明文字描述了具体内容" in txt

@@ -448,22 +448,59 @@ def check_image_section_fit(report_md: str) -> dict:
 
     for title, body in section_body:
         # Build a "section keyword pool" = words in title (stripped of
-        # 中文数字/punctuation) + content words from non-image body lines
+        # 中文数字/punctuation) + content words from non-image body lines.
+        # v0.3.1 (B3): also include nearest-preceding ### subsection title
+        # (within the same chapter) when scoring each image. Real-world case:
+        # ## 八、ACME空调 / ### 8.3 制造底气 — 武汉智能工厂 / image about 工厂
+        # — chapter title doesn't contain 工厂, but the subsection does.
         title_clean = re.sub(r"[一二三四五六七八九十、：（）()\s]+", " ", title).strip()
         title_keywords = {w.strip("：—、，。 ") for w in title_clean.split() if len(w) >= 2}
 
         body_text = "\n".join(b for b in body if "![" not in b)
 
+        # Walk the body, tracking the most-recent ### subsection title.
+        # Each image is scored against title_keywords ∪ subsection_keywords ∪ body_text.
+        current_subsection_keywords: set[str] = set()
         for line_in_body in body:
+            # Track ### subsection markers (3-level heading)
+            sub_match = re.match(r"^### (.+)$", line_in_body)
+            if sub_match:
+                sub_title = sub_match.group(1).strip()
+                # subsection keywords: split aggressively on Chinese punctuation
+                # AND ASCII separators, so 武汉家电智能工厂 / 磁悬浮装配线 become
+                # separate tokens (so substring overlap with caption tokens works).
+                current_subsection_keywords = {
+                    w.strip("：—、，。 ")
+                    for w in re.split(
+                        r"[0-9.、：（）()\s—\-,+，。]+",
+                        sub_title,
+                    )
+                    if len(w) >= 2
+                }
+                continue
+
             for cap, fname in img_re.findall(line_in_body):
-                # caption keywords: 2+ char tokens that are non-digit
                 cap_tokens = {t for t in re.split(r"[\s，。、：—()（）]+", cap) if len(t) >= 2}
-                # Score: how many caption tokens appear in title or body context?
-                title_hits = sum(1 for t in cap_tokens if any(t in k or k in t for k in title_keywords))
+                # Combine ## chapter keywords + ### subsection keywords for hit scoring.
+                # v0.3.1 (B3): expand pool with 3-char sliding-window substrings of each
+                # section/subsection keyword so long compound tokens like 武汉家电智能工厂
+                # match caption tokens like ACME家电智能工厂介绍片段 via shared 3-grams
+                # (家电智, 电智能, 智能工, 能工厂, …).
+                section_keywords = title_keywords | current_subsection_keywords
+                section_ngrams = set(section_keywords)
+                for kw in section_keywords:
+                    if len(kw) >= 3:
+                        for i in range(len(kw) - 2):
+                            section_ngrams.add(kw[i : i + 3])
+                title_hits = sum(
+                    1 for t in cap_tokens
+                    if any(ng in t for ng in section_ngrams) or
+                       any(t in k or k in t for k in section_keywords)
+                )
                 body_hits = sum(1 for t in cap_tokens if t in body_text)
-                # Mismatch heuristic: 0 title hits AND ≤ 1 body hits
-                # AND caption has ≥ 4 meaningful tokens (so we're not flagging
-                # a 1-word caption with no hope of matching anything)
+                # Mismatch heuristic unchanged (0 section hits AND <= 1 body hits
+                # AND caption has >= 4 meaningful tokens). v0.3.1 only widens
+                # what counts as "section hit" — strictly fewer false positives.
                 if title_hits == 0 and body_hits <= 1 and len(cap_tokens) >= 4:
                     mismatches.append({
                         "filename": fname,

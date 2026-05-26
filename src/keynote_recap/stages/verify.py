@@ -495,6 +495,17 @@ def check_image_section_fit(report_md: str) -> dict:
 
             for cap, fname in img_re.findall(line_in_body):
                 cap_tokens = {t for t in re.split(r"[\s，。、：—()（）]+", cap) if len(t) >= 2}
+                # v0.3.4 P3: also build 3-grams from the caption's stripped form.
+                # Real-world caption "ACME家电智能工厂介绍片段" splits into 1 token
+                # (no whitespace/punctuation), so cap_tokens len < 4 → never marked
+                # mismatch under the v0.3.1 gate. Trigrams expose meaningful units
+                # (家电智, 电智能, 智能工, 能工厂, ...) that can overlap section_ngrams.
+                cap_clean = re.sub(
+                    r"[一二三四五六七八九十、：（）()\s—\-:,，。.]+", "", cap
+                )
+                cap_trigrams: set[str] = set()
+                if len(cap_clean) >= 3:
+                    cap_trigrams = {cap_clean[i : i + 3] for i in range(len(cap_clean) - 2)}
                 # Combine ## chapter keywords + ### subsection keywords for hit scoring.
                 # v0.3.1 (B3): expand pool with 3-char sliding-window substrings of each
                 # section/subsection keyword so long compound tokens like 武汉家电智能工厂
@@ -511,17 +522,28 @@ def check_image_section_fit(report_md: str) -> dict:
                     if any(ng in t for ng in section_ngrams) or
                        any(t in k or k in t for k in section_keywords)
                 )
+                # v0.3.4 P3: trigram-based section overlap fallback — counts how
+                # many caption trigrams appear in section_ngrams. Higher signal
+                # than token overlap for Chinese-dense captions.
+                trigram_hits = len(cap_trigrams & section_ngrams)
                 body_hits = sum(1 for t in cap_tokens if t in body_text)
-                # Mismatch heuristic unchanged (0 section hits AND <= 1 body hits
-                # AND caption has >= 4 meaningful tokens). v0.3.1 only widens
-                # what counts as "section hit" — strictly fewer false positives.
-                if title_hits == 0 and body_hits <= 1 and len(cap_tokens) >= 4:
+                # v0.3.4 P3: also count how many cap trigrams appear in body_text.
+                body_trigram_hits = sum(1 for tg in cap_trigrams if tg in body_text)
+                # v0.3.4 P3: treat caption with ≥ 8 trigrams (≈ 10 Chinese chars)
+                # as "meaningful enough to judge", not the old "≥ 4 whitespace
+                # tokens" rule which excluded most Chinese captions.
+                meaningful = len(cap_tokens) >= 4 or len(cap_trigrams) >= 8
+                no_section_signal = title_hits == 0 and trigram_hits == 0
+                no_body_signal = body_hits <= 1 and body_trigram_hits <= 2
+                if no_section_signal and no_body_signal and meaningful:
                     mismatches.append({
                         "filename": fname,
                         "section_title": title,
                         "caption_excerpt": cap[:80],
                         "title_hits": title_hits,
                         "body_hits": body_hits,
+                        "trigram_hits": trigram_hits,
+                        "body_trigram_hits": body_trigram_hits,
                     })
 
     return {

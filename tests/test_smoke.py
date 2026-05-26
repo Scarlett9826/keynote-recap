@@ -3614,3 +3614,122 @@ def test_v033_f6_extract_count_max_lifted_for_rescue_headroom():
     assert M.EXTRACT_FINAL_COUNT_MAX == 65
     # Sanity: still enforces a real ceiling (not infinite)
     assert M.EXTRACT_FINAL_COUNT_MAX < 100
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# v0.3.4 — P1 (fuzzy bucket: 3-gram fallback for cn compound tokens)
+#          P3 (5.5.4 fit: caption-side trigram so cn captions enter judgment)
+# ──────────────────────────────────────────────────────────────────────────────
+def test_v034_p1_fuzzy_match_bridges_cn_compound_tokens():
+    """P1: stage 3 vision LLM emits ``recommended_section`` *before* stage 5
+    generates the real outline; phrasing won't match exactly. 3-gram overlap
+    bridges 'compound noun' chinese tokens like 武汉智能工厂 ↔ ACME智能工厂."""
+    from keynote_recap.stages.draft import _fuzzy_section_match
+
+    # Cases that v0.3.3 fuzzy missed but should now match
+    assert _fuzzy_section_match("武汉智能工厂", "八、ACME智能工厂") is True
+    assert _fuzzy_section_match("智能工厂介绍", "武汉家电智能工厂") is True
+
+
+def test_v034_p1_fuzzy_match_still_rejects_unrelated():
+    """P1: trigram fallback must NOT introduce false positives.
+    'Pixel Halo' should still NOT match 'Search'."""
+    from keynote_recap.stages.draft import _fuzzy_section_match
+
+    assert _fuzzy_section_match("Pixel Halo", "五、Search") is False
+    assert _fuzzy_section_match("your-company car", "pet show") is False
+    # cn-eng synonym is intentionally NOT bridged (would need semantic LLM)
+    assert _fuzzy_section_match("搜索体验", "五、Search") is False
+
+
+def test_v034_p1_fuzzy_match_preserves_v033_behaviour():
+    """P1: existing matches still work — no regressions on the 2-token /
+    substring paths."""
+    from keynote_recap.stages.draft import _fuzzy_section_match
+
+    assert _fuzzy_section_match("AI Agent", "二、AI Agent 演示") is True
+    assert _fuzzy_section_match("Gemini 模型层", "模型层：Gemini 3.5 谱系") is True
+    assert _fuzzy_section_match("ACME空调", "八、ACME空调") is True
+    assert _fuzzy_section_match("搜索重塑", "五、搜索重塑") is True
+
+
+def test_v034_p1_fuzzy_match_single_trigram_overlap_insufficient():
+    """P1: ≥ 2 shared trigrams required (single-trigram is too noisy —
+    '智能' alone appears in many unrelated chapters)."""
+    from keynote_recap.stages.draft import _fuzzy_section_match
+
+    # Only 1 trigram (智能X / Y智能) overlap → must NOT match
+    # 'AI智能' vs 'XX智能助手': trigrams 'AI智', '智能X' vs 'XX智', 'X智能', '智能助', '能助手'
+    # — actual shared trigram = empty (different surrounding chars). Use crafted case:
+    # rec='智能体' chapter='智能家居' → trigrams {'智能体'} vs {'智能家','能家居'} → no overlap, no match.
+    assert _fuzzy_section_match("智能体", "智能家居") is False
+
+
+def test_v034_p3_fit_judges_chinese_dense_captions():
+    """P3: pre-v0.3.4, Chinese caption 'ACME家电智能工厂介绍片段' splits into
+    1 whitespace-token, fails the ≥ 4 tokens guard, and silently passes fit
+    even when section is unrelated. Now trigram path catches these."""
+    from keynote_recap.stages.verify import check_image_section_fit
+
+    # Caption (Chinese-dense) about 工厂 placed in 'Search' chapter — should mismatch
+    md = (
+        "## 五、Search\n"
+        "本章介绍搜索能力。\n\n"
+        "![ACME家电智能工厂介绍武汉装配线片段](frames/frame_42.jpg)\n\n"
+        "搜索新体验。\n"
+    )
+    result = check_image_section_fit(md)
+    assert len(result["mismatches"]) >= 1, (
+        "Chinese-dense caption about 工厂 in a Search section must be flagged "
+        "(was silently passed pre-v0.3.4 because cap_tokens len < 4)"
+    )
+    assert result["mismatches"][0]["filename"] == "frame_42.jpg"
+
+
+def test_v034_p3_fit_pass_for_cn_caption_in_matching_section():
+    """P3: must not cause false positives — cn caption in matching chapter
+    via shared trigrams should pass."""
+    from keynote_recap.stages.verify import check_image_section_fit
+
+    md = (
+        "## 八、ACME智能工厂\n"
+        "工厂展示武汉装配线。\n\n"
+        "![ACME家电智能工厂介绍武汉装配线片段](frames/frame_99.jpg)\n\n"
+        "现场展示磁悬浮装配线。\n"
+    )
+    result = check_image_section_fit(md)
+    assert result["all_pass"], (
+        f"Cn caption in matching chapter must pass; got {result['mismatches']}"
+    )
+
+
+def test_v034_p3_fit_short_caption_still_skipped():
+    """P3: very short captions (< 4 tokens AND < 8 trigrams) are still
+    skipped — too little signal for the heuristic to be reliable."""
+    from keynote_recap.stages.verify import check_image_section_fit
+
+    md = (
+        "## 五、Search\n\n"
+        "![空调](frames/frame_3.jpg)\n"
+    )
+    result = check_image_section_fit(md)
+    assert result["all_pass"], (
+        "2-char caption is too short to judge; must NOT be flagged"
+    )
+
+
+def test_v034_p3_mismatch_dict_carries_trigram_diagnostics():
+    """P3: when a mismatch is reported, the diagnostic dict must include
+    trigram_hits and body_trigram_hits so retry directives have actionable info."""
+    from keynote_recap.stages.verify import check_image_section_fit
+
+    md = (
+        "## 五、Search\n"
+        "搜索能力介绍。\n\n"
+        "![ACME家电智能工厂介绍武汉装配线](frames/frame_x.jpg)\n"
+    )
+    result = check_image_section_fit(md)
+    assert result["mismatches"]
+    m = result["mismatches"][0]
+    assert "trigram_hits" in m
+    assert "body_trigram_hits" in m

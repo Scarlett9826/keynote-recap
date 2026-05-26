@@ -4,6 +4,62 @@ All notable changes to **keynote-recap** are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.4] — Chinese-caption fit & cn-compound bucket bridging (2026-05-26)
+
+### Fixed
+
+- **P1: ``_fuzzy_section_match`` adds 3-gram trigram fallback for Chinese
+  compound tokens**. Stage 3 vision LLM emits ``recommended_section``
+  *before* stage 5 generates the real outline, so its phrasing rarely
+  matches outline chapter titles word-for-word. Pre-v0.3.4, "武汉智能工厂"
+  vs "八、ACME智能工厂" failed token / substring match → frame went into
+  the unassigned bucket → draft LLM placed it wherever it wanted (one
+  of the root causes of "wrong-section" complaints). v0.3.4 adds a
+  trigram overlap path: ≥ 2 shared 3-grams (e.g. 智能工 + 能工厂) =
+  match. Threshold 2 (not 1) keeps single-trigram noise out (e.g.
+  "智能" alone appears in ten unrelated chapters). Cn-eng synonym
+  pairs ("搜索体验" ↔ "Search") are intentionally NOT bridged — that
+  needs semantic understanding, not n-gram tricks; future P1-a work
+  will solve it via a stage-5 re-bucket LLM call if the heuristic
+  proves insufficient.
+
+- **P3: ``check_image_section_fit`` (5.5.4) now judges Chinese-dense
+  captions instead of silently passing them**. Pre-v0.3.4 gate required
+  ``len(cap_tokens) >= 4`` where tokens come from whitespace/punctuation
+  splitting. Real Chinese caption "ACME家电智能工厂介绍武汉装配线片段"
+  splits to **1** token → never reached the mismatch decision → fit
+  always passed regardless of content. Now the gate also accepts
+  ``len(cap_trigrams) >= 8`` (≈ 10 Chinese chars), and trigram
+  overlap with ``section_ngrams`` counts as section-signal. Mismatch
+  diagnostic dict now carries ``trigram_hits`` / ``body_trigram_hits``
+  for retry-directive informativeness. v0.3.3 P5 already wired 5.5.4
+  into the retry loop; v0.3.4 P3 fixes its blind-spot for Chinese
+  reports specifically.
+
+### Notes
+
+- **P2 deliberately NOT fixed in this release**. Re-reading the code
+  showed P2 (draft LLM ignoring per-chapter buckets) is already covered
+  by the v0.3.3 stack: 5.5.4b ``check_bucket_placement`` is a HARD gate,
+  cross-bucket placement triggers stage 5 retry, and the prompt already
+  instructs strict bucket adherence. Adding more prompt warnings would
+  be cargo-cult.
+
+- **Scope discipline**: this release applies the "diminishing returns"
+  rule. Found while reading: P2 was non-issue; P1 has a "treat the
+  symptom (fuzzy improve) vs treat the disease (LLM re-bucket with real
+  outline)" choice, picked the symptom route because the disease route
+  costs +1 LLM call per run. If real-world v0.3.4 runs still produce
+  wrong-section complaints at meaningful rate, escalate to P1-a in
+  v0.3.5; otherwise let it be.
+
+- **Still not fixed (queued for v0.3.5+)**: S2 score_image silent
+  failures, S4 frame→timestamp drift on VFR sources, F3 single-shot
+  retry policy, F5 phash threshold. None are crash-class; all are
+  margin-quality issues for specific sources (Bilibili VFR, dense PPT
+  animation). U1–U4 (LLM stochasticity, hallucination, RPM throttling,
+  silent model upgrades) remain fundamental and unfixable.
+
 ## [0.3.3] — Three-flow robustness pass: extract / draft / verify shock-absorbers (2026-05-26)
 
 ### Fixed

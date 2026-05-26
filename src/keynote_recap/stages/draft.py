@@ -563,10 +563,27 @@ def _fuzzy_section_match(rec: str, chapter: str) -> bool:
     """True if recommended_section and chapter title share a 2+ char keyword.
 
     Strips Chinese numerals/punctuation and compares 2+ char tokens.
+
+    v0.3.4 P1: also tries 3-gram sliding-window overlap so Chinese compound
+    tokens like "武汉智能工厂" / "智能工厂介绍" share trigrams (智能工, 能工厂)
+    even when neither is a substring of the other. Vision LLM (stage 3) emits
+    ``recommended_section`` *before* stage 5 generates the real outline, so
+    its phrasing won't match outline chapter titles word-for-word — this 3-gram
+    fallback bridges that gap without an extra LLM call.
+
+    Threshold: ≥ 2 shared trigrams to count as a match (single-trigram overlap
+    is too noisy; e.g. "智能" appears everywhere).
     """
     def _tokens(s: str) -> set[str]:
         clean = re.sub(r"[一二三四五六七八九十、：（）()\s—\-:]+", " ", s)
         return {t.strip() for t in clean.split() if len(t.strip()) >= 2}
+
+    def _trigrams(s: str) -> set[str]:
+        # Strip punctuation/numerals first so "武汉、智能工厂" → "武汉智能工厂".
+        clean = re.sub(r"[一二三四五六七八九十、：（）()\s—\-:,，。.]+", "", s)
+        if len(clean) < 3:
+            return set()
+        return {clean[i : i + 3] for i in range(len(clean) - 2)}
 
     rec_tokens = _tokens(rec)
     ch_tokens = _tokens(chapter)
@@ -576,15 +593,18 @@ def _fuzzy_section_match(rec: str, chapter: str) -> bool:
     # Substring overlap (catch "Gemini 模型层" vs "模型层：Gemini 3.5 谱系")
     rec_blob = "".join(rec_tokens)
     ch_blob = "".join(ch_tokens)
-    if not rec_blob or not ch_blob:
-        return False
-    # Look for any 2+ char common substring
-    for token in rec_tokens:
-        if len(token) >= 2 and token in ch_blob:
-            return True
-    for token in ch_tokens:
-        if len(token) >= 2 and token in rec_blob:
-            return True
+    if rec_blob and ch_blob:
+        for token in rec_tokens:
+            if len(token) >= 2 and token in ch_blob:
+                return True
+        for token in ch_tokens:
+            if len(token) >= 2 and token in rec_blob:
+                return True
+    # v0.3.4 P1: 3-gram fallback for Chinese compound tokens
+    rec_grams = _trigrams(rec)
+    ch_grams = _trigrams(chapter)
+    if len(rec_grams & ch_grams) >= 2:
+        return True
     return False
 
 

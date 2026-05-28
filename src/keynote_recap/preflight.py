@@ -43,8 +43,11 @@ class ModelCheck:
 # Patterns are matched against the lowercased model name with re.search.
 # Order matters: more specific patterns first.
 _VERIFIED_MULTIMODAL_PATTERNS: tuple[tuple[str, str], ...] = (
-    # Anthropic Claude (multimodal since Claude 3)
-    (r"claude[-_ ]?(opus|sonnet)[-_ ]?(4|3\.7|3\.5)", "Claude Opus/Sonnet 4 (multimodal, 200K)"),
+    # Anthropic Claude (multimodal since Claude 3).
+    # Matches bare names (claude-sonnet-4-6) and provider-prefixed names
+    # such as ppio/pa/claude-sonnet-4-6 or openai/claude-opus-4 — re.search
+    # finds the pattern anywhere in the lowercased string.
+    (r"claude[-_ ]?(opus|sonnet|haiku)[-_ ]?(4|3\.7|3\.5)", "Claude Opus/Sonnet/Haiku 4 (multimodal, 200K)"),
     (r"claude[-_ ]?3(\.5|\.7)?[-_ ]?(opus|sonnet|haiku)", "Claude 3 family (multimodal)"),
     # Google Gemini (multimodal since 1.5)
     (r"gemini[-_ ]?2\.5[-_ ]?pro", "Gemini 2.5 Pro (multimodal, 1M context)"),
@@ -125,9 +128,12 @@ def check_model_capability(model_name: str) -> ModelCheck:
 VERIFIED_MODELS_DOC = """\
 Verified multimodal models (any of these will work):
 
-  - claude-opus-4 / claude-sonnet-4         (Anthropic, 200K context)
-  - gemini-2.5-pro                          (Google, 1M context — best price/perf)
-  - gpt-4o / gpt-4-turbo                    (OpenAI, 128K context)
+  - claude-opus-4 / claude-sonnet-4 / claude-haiku-4  (Anthropic, 200K context)
+  - gemini-2.5-pro                                     (Google, 1M context — best price/perf)
+  - gpt-4o / gpt-4-turbo                               (OpenAI, 128K context)
+
+Note: provider-prefixed names are recognised automatically, e.g.
+  ppio/pa/claude-sonnet-4-6, openai/gpt-4o, google/gemini-2.5-pro
 
 Known to NOT work (will silent-fail on stage 3 / 5.5.2):
 

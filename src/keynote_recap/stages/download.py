@@ -124,6 +124,16 @@ def run(state: State, cfg: Config) -> State:
             "  3. Try a different mirror / region for the source URL"
         )
 
+    # 4. Validate subtitle completeness
+    if transcript:
+        coverage = _validate_subtitle_coverage(transcript, duration_s)
+        console.print(f"  Subtitle coverage: {coverage:.1%}")
+        if coverage < 0.8:
+            console.print("[yellow]Warning: Subtitle coverage below 80% - some content may be missed[/]")
+            if coverage < 0.5:
+                console.print("[red]Error: Subtitle coverage critically low - aborting[/]")
+                raise RuntimeError("Subtitle coverage too low for reliable analysis")
+    
     state.video = VideoMeta(
         url=state.url,
         title=title,
@@ -141,6 +151,27 @@ def run(state: State, cfg: Config) -> State:
     state.save()
     console.print("[green]✓ Stage 1 done[/]\n")
     return state
+
+
+def _validate_subtitle_coverage(transcript: str, duration_s: float) -> float:
+    """Estimate subtitle coverage based on text length and video duration.
+    
+    Returns a value between 0 and 1, where 1 means full coverage.
+    Heuristic: ~150 characters per minute of video for Chinese content.
+    """
+    if duration_s <= 0:
+        return 0.0
+    
+    # Expected characters per minute for Chinese content
+    chars_per_minute = 150
+    expected_chars = (duration_s / 60) * chars_per_minute
+    
+    actual_chars = len(transcript)
+    
+    # Coverage ratio (capped at 1.0)
+    coverage = min(actual_chars / expected_chars, 1.0) if expected_chars > 0 else 0.0
+    
+    return coverage
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -277,8 +308,26 @@ def _extract_plaintext(subtitle_path: Path) -> str:
         # Strip HTML/SSA tags
         line = re.sub(r"<[^>]+>", "", line)
         line = re.sub(r"\{[^}]+\}", "", line)
+        
+        # Validate subtitle content quality
+        if len(line) < 2:  # Skip very short lines
+            continue
+        if re.match(r"^[\s\d:.,\-]+$", line):  # Skip timestamp-only lines
+            continue
+        
         lines.append(line)
-    return "\n".join(lines)
+    
+    transcript = "\n".join(lines)
+    
+    # Validate subtitle completeness
+    if not transcript.strip():
+        raise ValueError("Subtitle file is empty or contains no readable text")
+    
+    # Check minimum length (rough heuristic: 10 chars per minute of video)
+    if len(transcript) < 100:  # Very short subtitle file
+        console.print("[yellow]Warning: Subtitle file seems unusually short[/]")
+    
+    return transcript
 
 
 def _probe_resolution(video_path: Path) -> tuple[int, int]:

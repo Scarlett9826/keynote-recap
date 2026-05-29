@@ -258,76 +258,12 @@ def check_api_key(env_var_name: str) -> EnvCheck:
     )
 
 
-# Known multimodal models that can handle image understanding
-VERIFIED_MULTIMODAL_MODELS = {
-    "claude-opus-4", "claude-sonnet-4", "claude-3-opus", "claude-3-sonnet",
-    "gemini-2.5-pro", "gemini-2.0-flash", "gemini-pro-vision",
-    "gpt-4o", "gpt-4-turbo", "gpt-4-vision-preview",
-    "qwen-vl-max", "qwen-vl-plus",
-}
-
-# Models with known issues or insufficient capabilities
-BLACKLISTED_MODELS = {
-    "gpt-4o-mini", "gpt-3.5-turbo", "claude-3-haiku",
-    "deepseek-v3", "deepseek-chat", "qwen-max", "qwen-plus",
-}
-
-
-def check_model_capability(model_name: str) -> EnvCheck:
-    """Verify the configured model has multimodal capabilities.
-    
-    This project REQUIRES multimodal models for:
-    - Stage 3: frame extraction and captioning
-    - Stage 5.5.2: caption verification
-    
-    Using a text-only model will cause silent failures.
-    """
-    if not model_name:
-        return EnvCheck(
-            ok=False,
-            what="model",
-            detail="No model configured — all LLM stages will fail.",
-            fix="Set KEYNOTE_RECAP_MODEL or configure in config.yaml",
-            severity="blocker",
-        )
-    
-    # Normalize model name (strip vendor prefixes like "openai/")
-    normalized = model_name.split("/")[-1].lower()
-    
-    # Check blacklist first
-    if normalized in BLACKLISTED_MODELS:
-        return EnvCheck(
-            ok=False,
-            what="model",
-            detail=f"Model '{model_name}' is text-only and will fail at Stage 3/5.5.2",
-            fix="Use a multimodal model: claude-opus-4, gemini-2.5-pro, or gpt-4o",
-            severity="blocker",
-        )
-    
-    # Check whitelist
-    if normalized in VERIFIED_MULTIMODAL_MODELS:
-        return EnvCheck(
-            ok=True,
-            what="model",
-            detail=f"Model '{model_name}' is verified multimodal",
-        )
-    
-    # Unknown model - warning
-    return EnvCheck(
-        ok=False,
-        what="model",
-        detail=f"Model '{model_name}' is not in verified list — may lack multimodal capabilities",
-        fix="Use a verified model or add to VERIFIED_MULTIMODAL_MODELS if tested",
-        severity="warning",
-    )
-
-
 # ──────────────────────────────────────────────────────────────────────────────
 # Aggregate
 # ──────────────────────────────────────────────────────────────────────────────
-def run_all_checks(output_dir: Path, api_key_env: str, base_url: str = "", model_name: str = "") -> list[EnvCheck]:
+def run_all_checks(output_dir: Path, api_key_env: str, base_url: str = "") -> list[EnvCheck]:
     """Run every preflight env check; caller decides what to do with results."""
-    checks = [
+    return [
         check_python_version(),
         check_ffmpeg(),
         check_ffprobe(),
@@ -336,12 +272,6 @@ def run_all_checks(output_dir: Path, api_key_env: str, base_url: str = "", model
         check_api_key(api_key_env),
         check_anthropic_base_url(base_url),
     ]
-    
-    # Add model capability check if model is specified
-    if model_name:
-        checks.append(check_model_capability(model_name))
-    
-    return checks
 
 
 def has_blocker(checks: list[EnvCheck]) -> bool:

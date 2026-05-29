@@ -28,11 +28,6 @@ import httpx
 from openai import OpenAI
 from tenacity import retry, retry_if_not_exception_type, stop_after_attempt, wait_exponential
 
-try:
-    import anthropic as _anthropic_lib
-except ImportError:
-    _anthropic_lib = None  # type: ignore[assignment]
-
 from .config import LLMConfig
 
 # BUG-1: non-retryable 4xx exceptions — user/config errors must fail fast
@@ -100,48 +95,10 @@ T = TypeVar("T")
 R = TypeVar("R")
 
 
-<<<<<<< HEAD
 # ──────────────────────────────────────────────────────────────────────────────
 # Abstract backend
 # ──────────────────────────────────────────────────────────────────────────────
 
-=======
-class LLMClient:
-    """Chat client supporting OpenAI-compatible and Anthropic native backends."""
-
-    def __init__(self, cfg: LLMConfig) -> None:
-        api_key = os.getenv(cfg.api_key_env)
-        if not api_key:
-            raise RuntimeError(
-                f"Environment variable {cfg.api_key_env} not set. "
-                f"Export it or change `llm.api_key_env` in config."
-            )
-        self.cfg = cfg
-        self._provider = cfg.provider
-
-        if self._provider == "anthropic-native":
-            if _anthropic_lib is None:
-                raise RuntimeError(
-                    "The 'anthropic' package is required for provider='anthropic-native'. "
-                    "Install it with: pip install anthropic"
-                )
-            # Anthropic SDK automatically appends /v1 to base_url, so strip it if present.
-            base_url = cfg.base_url.rstrip("/")
-            if base_url.endswith("/v1"):
-                base_url = base_url[:-3]
-            self._anthropic_client = _anthropic_lib.Anthropic(
-                api_key=api_key,
-                base_url=base_url,
-            )
-            self.client = None  # type: ignore[assignment]
-        else:
-            self._anthropic_client = None
-            self.client = OpenAI(
-                api_key=api_key,
-                base_url=cfg.base_url,
-                timeout=cfg.timeout_s,
-            )
->>>>>>> 7a63d6d (feat: 增强验证机制和代码质量)
 
 class _Backend(ABC):
     """Internal protocol — every backend implements ``chat`` and
@@ -246,21 +203,6 @@ class _OpenAIBackend(_Backend):
         max_tokens: int = 8000,
         json_mode: bool = False,
     ) -> tuple[str, int, int]:
-<<<<<<< HEAD
-=======
-        """Send chat request. Returns (text, input_tokens, output_tokens)."""
-        if self._provider == "anthropic-native":
-            return self._chat_anthropic(
-                model=model,
-                system=system,
-                user=user,
-                messages=messages,
-                temperature=temperature,
-                max_tokens=max_tokens,
-                json_mode=json_mode,
-            )
-
->>>>>>> 7a63d6d (feat: 增强验证机制和代码质量)
         if messages is None:
             messages = []
             if system:
@@ -281,61 +223,11 @@ class _OpenAIBackend(_Backend):
         usage = resp.usage
         return text, getattr(usage, "prompt_tokens", 0), getattr(usage, "completion_tokens", 0)
 
-<<<<<<< HEAD
     @retry(
         stop=stop_after_attempt(3),
         wait=wait_exponential(min=2, max=30),
         retry=retry_if_not_exception_type(_NON_RETRYABLE),
     )
-=======
-    def _chat_anthropic(
-        self,
-        *,
-        model: str,
-        system: str = "",
-        user: str = "",
-        messages: list[dict[str, Any]] | None = None,
-        temperature: float = 0.5,
-        max_tokens: int = 8000,
-        json_mode: bool = False,
-    ) -> tuple[str, int, int]:
-        """Internal Anthropic native chat implementation."""
-        # json_mode: inject instruction into system prompt (no native equivalent)
-        effective_system = system
-        if json_mode:
-            json_hint = "Always respond with valid JSON only."
-            effective_system = f"{system}\n{json_hint}".strip() if system else json_hint
-
-        if messages is None:
-            anthropic_messages = [{"role": "user", "content": user}]
-        else:
-            # Strip system messages from the list; pass system separately
-            anthropic_messages = [m for m in messages if m.get("role") != "system"]
-            # Capture any inline system message if effective_system not set externally
-            if not effective_system:
-                for m in messages:
-                    if m.get("role") == "system":
-                        effective_system = m.get("content", "")
-                        break
-
-        kwargs: dict[str, Any] = {
-            "model": model,
-            "messages": anthropic_messages,
-            "temperature": temperature,
-            "max_tokens": max_tokens,
-        }
-        if effective_system:
-            kwargs["system"] = effective_system
-
-        resp = self._anthropic_client.messages.create(**kwargs)
-        text = resp.content[0].text if resp.content else ""
-        return text, resp.usage.input_tokens, resp.usage.output_tokens
-
-    # ──────────────────────────────────────────────────────────────────
-    # Vision chat (with image inputs)
-    # ──────────────────────────────────────────────────────────────────
-    @retry(stop=stop_after_attempt(3), wait=wait_exponential(min=2, max=30))
->>>>>>> 7a63d6d (feat: 增强验证机制和代码质量)
     def chat_with_images(
         self,
         *,
@@ -347,21 +239,6 @@ class _OpenAIBackend(_Backend):
         max_tokens: int = 4000,
         json_mode: bool = False,
     ) -> tuple[str, int, int]:
-<<<<<<< HEAD
-=======
-        """Send chat request with image inputs."""
-        if self._provider == "anthropic-native":
-            return self._chat_with_images_anthropic(
-                model=model,
-                system=system,
-                user_text=user_text,
-                image_paths=image_paths,
-                temperature=temperature,
-                max_tokens=max_tokens,
-                json_mode=json_mode,
-            )
-
->>>>>>> 7a63d6d (feat: 增强验证机制和代码质量)
         content: list[dict[str, Any]] = [{"type": "text", "text": user_text}]
 
         for p in image_paths:
@@ -390,7 +267,6 @@ class _OpenAIBackend(_Backend):
         usage = resp.usage
         return text, getattr(usage, "prompt_tokens", 0), getattr(usage, "completion_tokens", 0)
 
-<<<<<<< HEAD
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Anthropic-native backend (v0.3.0)
@@ -532,9 +408,6 @@ class _AnthropicBackend(_Backend):
         retry=retry_if_not_exception_type(_NON_RETRYABLE),
     )
     def chat_with_images(
-=======
-    def _chat_with_images_anthropic(
->>>>>>> 7a63d6d (feat: 增强验证机制和代码质量)
         self,
         *,
         model: str,
@@ -545,7 +418,6 @@ class _AnthropicBackend(_Backend):
         max_tokens: int = 4000,
         json_mode: bool = False,
     ) -> tuple[str, int, int]:
-<<<<<<< HEAD
         system_prompt = self._assemble_system(system, json_mode)
 
         # Anthropic content-block format: images BEFORE text
@@ -553,28 +425,11 @@ class _AnthropicBackend(_Backend):
         for p in image_paths:
             data = base64.b64encode(p.read_bytes()).decode("ascii")
             mime = "image/png" if p.suffix.lower() == ".png" else "image/jpeg"
-=======
-        """Internal Anthropic native vision implementation."""
-        # json_mode: inject instruction into system prompt
-        effective_system = system
-        if json_mode:
-            json_hint = "Always respond with valid JSON only."
-            effective_system = f"{system}\n{json_hint}".strip() if system else json_hint
-
-        # Anthropic image format: images first, then text
-        content: list[dict[str, Any]] = []
-        for p in image_paths:
-            data = base64.b64encode(p.read_bytes()).decode("ascii")
->>>>>>> 7a63d6d (feat: 增强验证机制和代码质量)
             content.append({
                 "type": "image",
                 "source": {
                     "type": "base64",
-<<<<<<< HEAD
                     "media_type": mime,
-=======
-                    "media_type": "image/jpeg",
->>>>>>> 7a63d6d (feat: 增强验证机制和代码质量)
                     "data": data,
                 },
             })
@@ -583,7 +438,6 @@ class _AnthropicBackend(_Backend):
         kwargs: dict[str, Any] = {
             "model": model,
             "messages": [{"role": "user", "content": content}],
-<<<<<<< HEAD
             "max_tokens": max_tokens,
             "temperature": temperature,
         }
@@ -669,21 +523,6 @@ class LLMClient:
     # tighten prompt?). Reset is the caller's responsibility (tests do).
     _json_repair_invocations: int = 0
 
-=======
-            "temperature": temperature,
-            "max_tokens": max_tokens,
-        }
-        if effective_system:
-            kwargs["system"] = effective_system
-
-        resp = self._anthropic_client.messages.create(**kwargs)
-        text = resp.content[0].text if resp.content else ""
-        return text, resp.usage.input_tokens, resp.usage.output_tokens
-
-    # ──────────────────────────────────────────────────────────────────
-    # Helpers
-    # ──────────────────────────────────────────────────────────────────
->>>>>>> 7a63d6d (feat: 增强验证机制和代码质量)
     @staticmethod
     def parse_json(text: str) -> Any:
         """Robust JSON parsing — strips markdown fences, then ``json.loads``.
